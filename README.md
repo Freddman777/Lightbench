@@ -2,7 +2,7 @@
 
 **A miniature-painting planner for light, color, and layering.**
 
-The Light Bench helps you plan how to paint a miniature *before* you pick up the airbrush. You set a light direction, build a color scheme, and the tool shows you — from four angles at once — exactly where the highlights and shadows fall and what color goes where.
+The Light Bench helps you plan how to paint a miniature *before* you pick up the airbrush. You set a light direction, build a color scheme, and the tool shows you — from five angles at once (front, both sides, back, and top-down) — exactly where the highlights and shadows fall and what color goes where.
 
 It is a **teaching tool, not a photo of your exact model**. The figures are kept simple and blocky on purpose, so you can read the *planes* (which surfaces face the light) and apply that thinking to any miniature on your table.
 
@@ -17,10 +17,12 @@ Just **double-click the `.html` file** — it runs in any web browser, with no i
 ## The sections, one by one
 
 ### 1. Choose a model
-When you open the app you pick what you're painting — a **Bust** or a **Standing figure**. This just decides which shape you see. Everything else works the same on any model, and a color scheme you build carries over between them. Once you're in, a small **"Model: … · change"** button up top lets you switch without losing your colors.
+When you open the app you pick what you're painting — a **Bust**, a **Standing figure**, or a **Rifle stance** (arms raised holding a rifle at an angle, which adds asymmetry and angled planes). This just decides which shape you see. Everything else works the same on any model, and a color scheme you build carries over between them. Once you're in, a small **"Model: … · change"** button up top lets you switch without losing your colors.
 
-### 2. The four views
-This is the *output*, not a control. You see the model from the **front, both sides, and the back** at the same time. As you change the light or the colors, all four update together — so you can see that lighting the front means the back falls into shadow. On a computer the figure stays put while the controls scroll; on a phone it sits on top.
+### 2. The views
+This is the *output*, not a control. You see the model from the **front, both sides, the back, and from directly above** at the same time. The four side views sit in a grid; the top-down view sits in its own panel below them, like an orthographic drawing sheet. As you change the light or the colors, every view updates together — so you can see that lighting the front means the back falls into shadow, and that an overhead (zenithal) light makes the whole top view glow. On a computer the figure stays put while the controls scroll; on a phone it sits on top.
+
+> The top-down view is the most abstract — from straight above, a figure is mostly head-and-shoulder shapes. That's normal; it's there to show how much light flat, upward-facing surfaces catch.
 
 ### 3. Light direction
 Two sliders aim a single light:
@@ -79,7 +81,7 @@ Name a scheme and **Save** it. It remembers your colors, light position, glaze s
 
 1. **Pick the model.** Open the app, click *Bust*. You now see the bust from four sides.
 
-2. **Set the light.** Click the *Zenithal* preset (or push Height to the top). Watch the tops of the head, shoulders, and chest brighten while the underside of the chin, the neck, and the lower chest fall into shadow. That's your light map.
+2. **Set the light.** Click the *Zenithal* preset (or push Height to the top). Watch the tops of the head, shoulders, and chest brighten while the underside of the chin, the neck, and the lower chest fall into shadow. The top-down view should glow almost evenly — that's *why* zenithal priming works. That's your light map.
 
 3. **Build the color.** In Recipe, set the base to a mid green. Choose 5 steps. The tool fills in a dark cool-green shadow, your green base, two lighter/warmer mids, and a pale warm highlight. Glance at the four views — the highlight color should be sitting on the brow, cheekbones, and shoulder tops.
 
