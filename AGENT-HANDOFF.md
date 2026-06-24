@@ -1,0 +1,65 @@
+# Agent Hand-off — The Light Bench
+
+**You are continuing work on "The Light Bench," a single-file HTML miniature-painting teaching tool.** Read this whole sheet before editing anything. The rules below exist because breaking them has already caused real problems. If you only read one section, read **Build pipeline** and **Collaboration protocol**.
+
+---
+
+## Hard rules (do not violate)
+- **Source of truth is the React file `light-bench.jsx`. The `.html` is a BUILD ARTIFACT.** Never hand-edit the minified `.html`. Edit the `.jsx`, then rebuild.
+- **Deliverable is the `.html` only.** Build it from the source; don't ship the `.jsx` to the user.
+- **One change at a time. Verify before shipping** (see Verify). Don't batch unrelated changes.
+- **No paint brand names** anywhere in the app — generic colors plus a color picker only.
+- **Figures stay blocky and generic.** This is a teaching tool about light on planes, not a portrait of a specific model.
+- **Don't add libraries** beyond what's already bundled (React, react-dom, lucide-react). No CDN runtime deps — the output must run offline by double-click.
+
+---
+
+## What it is (mental model)
+Everything runs off ONE engine: a 3D light vector is dotted against a per-plane **surface normal** to get a brightness `b`, which buckets into a **value tier**, which maps to a **color**. Every feature is a lens on that one model:
+- **Light** sets the vector (orbit + height). **Recipe** sets the colors of the tiers. **Wheel** visualizes/suggests colors. **Sequencer** isolates tiers as paint steps. **Glaze** re-composites the tiers as transparent layers.
+- Three models (`bust`, `standing`, `gun`), each with five views: `front`, `left`, `right`, `back`, `top`. Each view is an array of `{ p: "x,y x,y …", n: [x,y,z] }` polygons.
+
+---
+
+## Coordinate + math conventions (get these exactly right)
+- **World axes:** `+z` = front (toward front-view camera), `+x` = the figure's "left-view" side, `+y` = up. Front-view normals are +z-dominant, back −z, left +x, right −x; all top planes carry +y.
+- **Right view is derived:** `GUN_RIGHT = GUN_LEFT.map(r => ({ p: mirrorPoly(r.p), n: [-r.n[0], r.n[1], r.n[2]] }))`. Draw LEFT correctly; right mirrors automatically (a true opposite-side view).
+- **Light vector:** `L = [cos(el)·sin(az), sin(el), cos(el)·cos(az)]` (az,el in radians; az 0=front, 90=+x/left, 180=back, 270=right; el 90=straight up/zenithal).
+- **Brightness:** `b = 0.05 + 0.95 · smoothstep(-0.3, 1, dot(normal, L))`. Tier = `clamp(floor(b · numSteps), 0, numSteps-1)`.
+- **Color wheel — three things must share ONE angle convention** (this was a real bug): background is `conic-gradient(from 90deg, …)`. Plot: `phi=(h+90)°; x=C+r·sin(phi); y=C−r·cos(phi)`. Click: `h = atan2(dx, −dy)·180/π − 90`. A dot must sit on its own background color and a click must return that hue.
+- **Glaze compositing:** each plane starts from a grey value underpainting `valueGrey(b)`, then each layer composites over it; layer's effective opacity = `opacity · (1 − pooling·b)` (thin on highlights `b`→1, full in shadow `b`→0). Color-agnostic; same math for any color.
+- **Ramp:** highlights step lighter AND warmer (hue toward ~52°); shadow steps darker AND cooler (hue toward ~250°).
+
+---
+
+## Build pipeline (run after every source edit)
+1. Edit `light-bench.jsx`.
+2. Make `browser.jsx`: copy the source, then (a) replace `window.storage` → `store` and inject a `localStorage`-backed `store` shim with the same async `get/set/list/delete` API, (b) prepend `import { createRoot } from "react-dom/client";`, (c) append `createRoot(document.getElementById("root")).render(React.createElement(App));`.
+3. Bundle: `npx esbuild browser.jsx --bundle --loader:.jsx=jsx --format=iife --minify --define:process.env.NODE_ENV='"production"' --outfile=app.js`
+4. CSS: `npx tailwindcss -i input.css -o styles.css --minify` (tailwind v3; config `content: ["./browser.jsx"]`; `input.css` has the three `@tailwind` directives).
+5. Assemble `index.html`: one file with `<style>{styles.css + extras}</style>`, `<div id="root">`, `<script>{app.js}</script>`. Extras include body bg `#141611`, range height, and the `.controls-scroll` thin-scrollbar rules.
+- Result ≈ 250 KB, fully self-contained, no network.
+- **Why the storage swap:** `localStorage` is blocked inside the Claude artifact renderer but works in a standalone browser file (what we ship), so the browser build uses it.
+
+---
+
+## Verify (before handing back)
+- Parse-check the source: `esbuild … --outfile=/dev/null` must exit 0.
+- Headless render with **jsdom** (`runScripts: "dangerously"`, set a `url:` so localStorage works): confirm no window errors, `polygon` count is sane (≈100+ once a model is selected), the chooser shows all three models, clicking one enters the app, `.controls-scroll` exists, and arbitrary Tailwind values you added (e.g. `max-h-[27vh]`) actually appear in the generated CSS.
+- You cannot verify visual layout in jsdom. For figure-shape changes, say so plainly and ask the user to eyeball the result.
+
+---
+
+## Gotchas
+- Adding arbitrary Tailwind classes (`lg:max-h-[27vh]`, `text-[11px]`, etc.) only works if they appear literally in `browser.jsx` so the content scan emits them. Check the CSS after building.
+- The model pane uses **vh height caps** (`svgExtra="lg:max-h-[27vh]"` on side views, `lg:max-h-[15vh]` on top) so all five views fit the viewport without zoom; it also has `lg:overflow-y-auto` as a scroll fallback. Mobile (no `lg:`) keeps natural `w-full h-auto` stacking.
+- Glaze only affects `paint`-mode sequencer steps; Prime stays black, Zenithal stays grey (they precede any glaze). A "· glaze" tag shows when active.
+- Recipes (saved via storage) are model-independent on purpose — a scheme loads onto any figure. Don't couple them to the selected model.
+
+---
+
+## Collaboration protocol (prevents diverging copies)
+- **Start from the latest file.** Ask which file is current before editing.
+- **Make changes in the source, rebuild, hand the rebuilt `.html` back.** Keep the updated `.jsx` as the new source of truth.
+- **Never edit the built HTML in parallel** with another person. If the only thing you were given is an edited `.html`, do NOT blindly rebuild over it — first diff it against the prior build to recover any hand-made changes, then port them into the source. (This has happened; recovering minified edits is painful.)
+- When done, tell the user exactly what changed and what you could NOT verify (e.g. visual fit, figure shapes).
