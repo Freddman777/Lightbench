@@ -16,16 +16,18 @@
 
 ## What it is (mental model)
 Everything runs off ONE engine: a 3D light vector is dotted against a per-plane **surface normal** to get a brightness `b`, which buckets into a **value tier**, which maps to a **color**. Every feature is a lens on that one model:
-- **Light** sets the vector (orbit + height). **Recipe** sets the colors of the tiers. **Wheel** visualizes/suggests colors. **Sequencer** isolates tiers as paint steps. **Glaze** re-composites the tiers as transparent layers.
-- Three models (`bust`, `standing`, `gun`), each with five views: `front`, `left`, `right`, `back`, `top`. Each view is an array of `{ p: "x,y x,y …", n: [x,y,z] }` polygons.
+- **Light** sets the vector (orbit + height). **Recipe** sets the colors of the tiers. **Wheel** visualizes/suggests colors. **Sequencer** isolates tiers as paint steps. **Glaze** re-composites the tiers as transparent layers. **Method** (brush/airbrush) reshapes the step text. **Spray cone** reframes the same light vector as a nozzle and renders paint *coverage* instead of value.
+- Four models (`bust`, `standing`, `gun`, `dual`), each with five views: `front`, `left`, `right`, `back`, `top`. Each view is an array of `{ p: "x,y x,y …", n: [x,y,z] }` polygons.
 
 ---
 
 ## Coordinate + math conventions (get these exactly right)
 - **World axes:** `+z` = front (toward front-view camera), `+x` = the figure's "left-view" side, `+y` = up. Front-view normals are +z-dominant, back −z, left +x, right −x; all top planes carry +y.
 - **Right view is derived:** `GUN_RIGHT = GUN_LEFT.map(r => ({ p: mirrorPoly(r.p), n: [-r.n[0], r.n[1], r.n[2]] }))`. Draw LEFT correctly; right mirrors automatically (a true opposite-side view).
+- **A back view can be derived from its front** the same way, but mirror AND flip front/back: `DUAL_BACK = DUAL_FRONT.map(r => ({ p: mirrorPoly(r.p), n: [-r.n[0], r.n[1], -r.n[2]] }))`. This swaps left/right (held items, bent knee) and darkens for rear lighting — use it so front and back can't drift apart. (`mirrorPoly` assumes width 200; top views are 220-wide and are NOT mirrored this way.)
 - **Light vector:** `L = [cos(el)·sin(az), sin(el), cos(el)·cos(az)]` (az,el in radians; az 0=front, 90=+x/left, 180=back, 270=right; el 90=straight up/zenithal).
 - **Brightness:** `b = 0.05 + 0.95 · smoothstep(-0.3, 1, dot(normal, L))`. Tier = `clamp(floor(b · numSteps), 0, numSteps-1)`.
+- **Spray coverage** (airbrush mode reuses the light vector as the nozzle aim): `cov = smoothstep(edge, edge+soft, dot(n,L))` with `edge = -0.15 + focus·0.85`, `soft = 0.6 − focus·0.48` (focus 0 = wide/feathered, 1 = tight). Crucially there is **NO ambient floor** — planes facing away get `cov=0` and render as bare primer. FigureView paints `mix("#33322d", sprayColor, cov)` when `sprayOn`; `sprayColor` is the active step's tier color.
 - **Color wheel — three things must share ONE angle convention** (this was a real bug): background is `conic-gradient(from 90deg, …)`. Plot: `phi=(h+90)°; x=C+r·sin(phi); y=C−r·cos(phi)`. Click: `h = atan2(dx, −dy)·180/π − 90`. A dot must sit on its own background color and a click must return that hue.
 - **Glaze compositing:** each plane starts from a grey value underpainting `valueGrey(b)`, then each layer composites over it; layer's effective opacity = `opacity · (1 − pooling·b)` (thin on highlights `b`→1, full in shadow `b`→0). Color-agnostic; same math for any color.
 - **Ramp:** highlights step lighter AND warmer (hue toward ~52°); shadow steps darker AND cooler (hue toward ~250°).
@@ -45,7 +47,8 @@ Everything runs off ONE engine: a 3D light vector is dotted against a per-plane 
 
 ## Verify (before handing back)
 - Parse-check the source: `esbuild … --outfile=/dev/null` must exit 0.
-- Headless render with **jsdom** (`runScripts: "dangerously"`, set a `url:` so localStorage works): confirm no window errors, `polygon` count is sane (≈100+ once a model is selected), the chooser shows all three models, clicking one enters the app, `.controls-scroll` exists, and arbitrary Tailwind values you added (e.g. `max-h-[27vh]`) actually appear in the generated CSS.
+- Headless render with **jsdom** (`runScripts: "dangerously"`, set a `url:` so localStorage works): confirm no window errors, `polygon` count is sane (≈100+ once a model is selected), the chooser shows all four models, clicking one enters the app, `.controls-scroll` exists, and arbitrary Tailwind values you added (e.g. `max-h-[27vh]`) actually appear in the generated CSS.
+- **jsdom gotcha that wasted real time:** `document.body.textContent` includes the bundled `<script>` source, so substring checks for UI strings match the code, not the rendered DOM. Verify presence/visibility via real elements (query a button/section node), and verify rendering changes via `<polygon>` `fill` attributes — never via `body.textContent.includes(...)`.
 - You cannot verify visual layout in jsdom. For figure-shape changes, say so plainly and ask the user to eyeball the result.
 
 ---
@@ -54,6 +57,7 @@ Everything runs off ONE engine: a 3D light vector is dotted against a per-plane 
 - Adding arbitrary Tailwind classes (`lg:max-h-[27vh]`, `text-[11px]`, etc.) only works if they appear literally in `browser.jsx` so the content scan emits them. Check the CSS after building.
 - The model pane uses **vh height caps** (`svgExtra="lg:max-h-[27vh]"` on side views, `lg:max-h-[15vh]` on top) so all five views fit the viewport without zoom; it also has `lg:overflow-y-auto` as a scroll fallback. Mobile (no `lg:`) keeps natural `w-full h-auto` stacking.
 - Glaze only affects `paint`-mode sequencer steps; Prime stays black, Zenithal stays grey (they precede any glaze). A "· glaze" tag shows when active.
+- **Method** is a header toggle (`brush`/`airbrush`). `buildStages(n, method)` swaps each step's `note`/`watch` text but keeps the same `id`/`mode`/`iso` (so isolation rendering is identical). The **Spray cone** section is gated by `method === "airbrush"` and only then can spray coverage be turned on. State `method`, `spray`, `focus` all persist in saved recipes.
 - Recipes (saved via storage) are model-independent on purpose — a scheme loads onto any figure. Don't couple them to the selected model.
 
 ---

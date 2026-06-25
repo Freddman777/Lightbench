@@ -269,8 +269,8 @@ const GUN_FRONT = [
   { p: "58,198 70,192 74,200 62,206", n: [0, 0.3, 0.8] },
   { p: "70,194 76,204 176,156 170,146", n: [0, 0.5, 0.72] },
   { p: "76,204 176,156 178,166 78,214", n: [0, 0.12, 0.98] },
-  { p: "88,178 100,172 106,182 94,190", n: [0, 0.15, 0.95] },
-  { p: "124,164 136,158 142,168 130,176", n: [0, 0.15, 0.95] },
+  { p: "84,184 102,182 104,200 86,202", n: [0, 0.2, 0.9] },
+  { p: "122,182 142,178 144,194 124,196", n: [0, 0.4, 0.85] },
 ];
 const GUN_BACK = [
   { p: "78,22 100,14 122,22 120,38 80,38", n: [0, 0.75, -0.66] },
@@ -339,10 +339,86 @@ const GUN = [
   { key: "top", label: "Top (from above)", regions: GUN_TOP },
 ];
 
+const DUAL_FRONT = [
+  { p: "80,30 100,22 120,30 118,52 82,52", n: [0, 0.75, 0.66] },
+  { p: "80,52 90,54 90,96 82,90", n: [-0.6, 0.05, 0.8] },
+  { p: "120,52 110,54 110,96 118,90", n: [0.6, 0.05, 0.8] },
+  { p: "90,52 110,52 110,96 90,96", n: [0, 0, 1] },
+  { p: "92,96 108,96 106,110 94,110", n: [0, 0.1, 0.99] },
+  { p: "64,112 136,112 140,128 60,128", n: [0, 0.82, 0.45] },
+  { p: "38,110 64,108 66,142 36,146", n: [-0.7, 0.3, 0.4] },
+  { p: "162,110 136,108 134,142 164,146", n: [0.7, 0.3, 0.4] },
+  { p: "62,128 138,128 132,210 68,210", n: [0, 0.03, 1] },
+  { p: "68,210 132,210 128,250 72,250", n: [0, 0.04, 1] },
+  { p: "72,250 128,250 126,278 74,278", n: [0, 0.05, 1] },
+  { p: "74,278 98,278 86,346 64,344", n: [0, 0.04, 1] },
+  { p: "64,346 86,344 92,430 72,432", n: [0, 0.03, 1] },
+  { p: "54,428 92,426 94,442 52,444", n: [0.2, 0.3, 0.5] },
+  { p: "102,278 126,278 136,344 116,344", n: [0, 0.04, 1] },
+  { p: "116,348 136,344 140,430 122,432", n: [0, 0.03, 1] },
+  { p: "112,428 150,426 152,442 110,444", n: [0.2, 0.3, -0.3] },
+  { p: "44,124 60,130 42,110 30,116", n: [-0.6, 0.25, 0.55] },
+  { p: "30,116 42,110 32,74 18,80", n: [-0.5, 0.15, 0.7] },
+  { p: "12,78 36,76 38,92 14,94", n: [0, 0.4, 0.9] },
+  { p: "16,40 30,38 34,78 20,80", n: [-0.2, 0.35, 0.85] },
+  { p: "12,52 22,50 24,64 14,66", n: [-0.4, 0.2, 0.78] },
+  { p: "140,128 156,124 178,144 164,150", n: [0.6, 0.2, 0.5] },
+  { p: "164,148 178,144 192,158 178,164", n: [0.5, 0.1, 0.7] },
+  { p: "178,158 192,156 196,170 182,174", n: [0.3, 0.1, 0.8] },
+  { p: "179,160 197,158 198,168 181,170", n: [0.2, 0.2, 0.7] },
+  { p: "185,158 193,156 199,82 192,82", n: [0.3, 0.4, 0.55] },
+];
+const DUAL_BACK = DUAL_FRONT.map((r) => ({ p: mirrorPoly(r.p), n: [-r.n[0], r.n[1], -r.n[2]] }));
+const DUAL_LEFT = [
+  { p: "84,30 108,24 116,38 110,50 86,50", n: [0.5, 0.7, 0.1] },
+  { p: "84,50 96,50 92,96 82,90", n: [0.4, 0.05, 0.75] },
+  { p: "96,50 112,52 110,96 92,96", n: [0.95, 0.05, 0] },
+  { p: "112,52 116,62 114,94 110,96", n: [0.5, 0.05, -0.75] },
+  { p: "90,96 108,96 106,112 92,112", n: [0.9, 0.1, 0] },
+  { p: "76,108 110,106 112,140 74,142", n: [0.3, 0.5, 0.2] },
+  { p: "84,112 116,112 118,124 82,124", n: [0.2, 0.82, 0] },
+  { p: "80,124 96,124 94,200 82,196", n: [0.4, 0.1, 0.78] },
+  { p: "96,122 120,124 118,205 94,205", n: [0.95, 0.05, 0] },
+  { p: "118,136 126,146 124,205 118,205", n: [0.45, 0.05, -0.78] },
+  { p: "84,205 118,205 116,252 86,252", n: [0.9, 0.04, 0] },
+  { p: "86,252 116,252 114,282 90,282", n: [0.9, 0.05, 0] },
+  { p: "100,282 116,282 118,340 106,340", n: [0.9, 0.04, -0.2] },
+  { p: "106,344 118,340 122,428 112,430", n: [0.9, 0.03, -0.15] },
+  { p: "106,426 128,424 130,438 104,440", n: [0.3, 0.3, -0.4] },
+  { p: "86,282 108,280 100,332 80,330", n: [0.85, 0.04, 0.25] },
+  { p: "80,332 100,330 96,420 78,422", n: [0.88, 0.03, 0.12] },
+  { p: "62,418 96,414 98,430 60,432", n: [0.3, 0.3, 0.5] },
+  { p: "84,124 100,122 94,98 78,102", n: [0.4, 0.4, 0.5] },
+  { p: "78,102 94,98 88,60 72,64", n: [0.3, 0.25, 0.7] },
+  { p: "70,32 84,30 88,64 74,66", n: [0.2, 0.4, 0.6] },
+  { p: "94,150 116,148 114,174 92,176", n: [0.5, 0.1, 0.6] },
+  { p: "110,160 152,140 156,152 114,172", n: [0.4, 0.35, 0.5] },
+];
+const DUAL_RIGHT = DUAL_LEFT.map((r) => ({ p: mirrorPoly(r.p), n: [-r.n[0], r.n[1], r.n[2]] }));
+const DUAL_TOP = [
+  { p: "70,60 150,60 156,96 64,96", n: [0, 1, 0] },
+  { p: "96,66 124,66 122,92 98,92", n: [0, 1, 0.05] },
+  { p: "98,52 122,52 120,72 100,72", n: [0, 0.98, 0.15] },
+  { p: "44,70 70,66 72,86 46,90", n: [-0.4, 0.85, 0.1] },
+  { p: "150,70 176,66 174,90 148,86", n: [0.4, 0.85, 0.1] },
+  { p: "30,72 56,68 58,82 32,86", n: [-0.6, 0.6, 0.2] },
+  { p: "10,70 32,66 34,82 12,86", n: [-0.7, 0.55, 0.2] },
+  { p: "164,72 190,68 192,82 166,86", n: [0.6, 0.6, 0.2] },
+  { p: "188,74 214,72 216,82 190,84", n: [0.7, 0.5, 0.2] },
+];
+const DUAL = [
+  { key: "front", label: "Front", regions: DUAL_FRONT },
+  { key: "left", label: "Left", regions: DUAL_LEFT },
+  { key: "right", label: "Right", regions: DUAL_RIGHT },
+  { key: "back", label: "Back", regions: DUAL_BACK },
+  { key: "top", label: "Top (from above)", regions: DUAL_TOP },
+];
+
 const MODELS = {
   bust: { label: "Bust", blurb: "Head & shoulders — what you're most likely painting.", views: BUST },
   standing: { label: "Standing figure", blurb: "Full body — broad planes, full-length light.", views: STANDING },
   gun: { label: "Rifle stance", blurb: "Arms raised, rifle held at an angle — asymmetry, foreshortening, and angled planes.", views: GUN },
+  dual: { label: "Dual wield", blurb: "Arms thrown out — pistol raised high, blade out. Extended limbs and two held items at different angles.", views: DUAL },
 };
 const frontOf = (views) => views.find((v) => v.key === "front").regions;
 
@@ -356,45 +432,89 @@ function brightness(normal, L) {
   const d = normal[0] * L[0] + normal[1] * L[1] + normal[2] * L[2];
   return 0.05 + 0.95 * smoothstep(-0.3, 1, d); // ambient floor + directional
 }
+// How much spray lands on a plane. L is the nozzle aim; focus 0=wide/feathered, 1=tight.
+// No ambient floor: planes facing away from the nozzle get NO paint (stay bare) — the
+// core airbrush lesson the soft light model hides.
+function sprayCoverage(normal, L, focus) {
+  const d = normal[0] * L[0] + normal[1] * L[1] + normal[2] * L[2];
+  const edge = -0.15 + focus * 0.85; // wide cone reaches angled planes; tight cone only near-facing ones
+  const soft = 0.6 - focus * 0.48;   // wide = gentle feathered falloff; tight = hard edge
+  return smoothstep(edge, edge + soft, d);
+}
 function tierIndex(b, n) { return clamp(Math.floor(b * n), 0, n - 1); }
 
 /* ============================== SEQUENCER ============================== */
-function buildStages(n) {
+function buildStages(n, method = "brush") {
+  const air = method === "airbrush";
   const has = (k) => tierMeta(n).some((t) => t.key === k);
   const s = [
     { id: "prime", name: "Prime black", mode: "prime", iso: null,
-      note: "Thin, even coat of black primer. This is your deepest shadow — everything builds up from here.",
-      watch: "Don't flood it. Heavy primer fills detail and hides the sculpt. Several light passes beat one wet one." },
+      note: air
+        ? "Airbrush thinned black primer in light passes at low pressure (~15–20 PSI). This is your deepest shadow — everything builds from here."
+        : "Thin, even coat of black primer. This is your deepest shadow — everything builds up from here.",
+      watch: air
+        ? "Too close or too wet and it pools and spiders. Back off to about a hand's width and build it in thin passes."
+        : "Don't flood it. Heavy primer fills detail and hides the sculpt. Several light passes beat one wet one." },
     { id: "zenithal", name: "Zenithal", mode: "zenithal", iso: null,
-      note: "Spray white from straight above. You're pre-baking the light map — tops bright, undersides dark.",
-      watch: "Keep the light strictly overhead. Angle it and your free shading no longer matches where light actually falls." },
+      note: air
+        ? "Spray white from straight overhead in soft passes — pre-baking the light map, tops bright and undersides dark. This step was always an airbrush job."
+        : "Spray white from straight above. You're pre-baking the light map — tops bright, undersides dark.",
+      watch: air
+        ? "Keep the nozzle strictly overhead. Drift to the side and your sprayed shading won't match where light actually falls."
+        : "Keep the light strictly overhead. Angle it and your free shading no longer matches where light actually falls." },
     { id: "base", name: "Base coat", mode: "paint", iso: "base",
-      note: "Lay the midtone over everything, thin enough to let the zenithal value show through.",
-      watch: "Opaque here buries the zenithal. If you go solid, you've signed up to rebuild all the shading by hand." },
+      note: air
+        ? "Thin the base to milk and lay angled passes from slightly above, letting the zenithal value glow through."
+        : "Lay the midtone over everything, thin enough to let the zenithal value show through.",
+      watch: air
+        ? "Paint too thick or pressure too high goes chalky and buries the zenithal. Thin it more and build more passes."
+        : "Opaque here buries the zenithal. If you go solid, you've signed up to rebuild all the shading by hand." },
     { id: "shade", name: "Shade", mode: "paint", iso: "shadow",
-      note: "Push your shadow color into the recesses only — the regions lit here are where it belongs.",
-      watch: "Keep it in the valleys. Shadow creeping onto raised planes flattens the whole figure." },
+      note: air
+        ? "Drop the spray angle: thinned shadow color low and from the side, so the cone only catches the undersides and recesses."
+        : "Push your shadow color into the recesses only — the regions lit here are where it belongs.",
+      watch: air
+        ? "Spray straight-on and shadow lands everywhere. Lower the angle so the raised planes stay clean."
+        : "Keep it in the valleys. Shadow creeping onto raised planes flattens the whole figure." },
   ];
   if (has("mid")) s.push({ id: "mid", name: "Midtone highlight", mode: "paint", iso: "mid",
-    note: "First highlight on the broad raised faces, pulled back off the recesses.",
-    watch: "This layer is broad. Resist going bright yet — that's the next step's job." });
+    note: air
+      ? "Raise the angle back toward overhead so only the broad upper faces catch the pass."
+      : "First highlight on the broad raised faces, pulled back off the recesses.",
+    watch: air
+      ? "Ease off the pressure and stay above — overspray drifting down flattens the highlight."
+      : "This layer is broad. Resist going bright yet — that's the next step's job." });
   s.push({ id: "top", name: "Highlight", mode: "paint", iso: "top",
-    note: "Brighter, warmer highlight on the top planes — only what faces the light most directly.",
-    watch: "Tight placement. A broad bright coat reads as 'repainted lighter', not 'lit'." });
+    note: air
+      ? "Steep, near-overhead passes with a thinned highlight mix — only the planes facing the light most directly."
+      : "Brighter, warmer highlight on the top planes — only what faces the light most directly.",
+    watch: air
+      ? "Tip-dry spits speckles into a fine pass. Clear the needle, keep the mix thin, and feather from a touch farther back."
+      : "Tight placement. A broad bright coat reads as 'repainted lighter', not 'lit'." });
   if (has("edge")) s.push({ id: "edge", name: "Edge highlight", mode: "paint", iso: "edge",
-    note: "Brush only. Razor lines on the hardest edges catching the light.",
-    watch: "Hairline lines, brightest mix. If it looks chalky, thin it; if too stark, glaze the midtone back over." });
+    note: air
+      ? "Switch to a brush — an airbrush can't lay a razor edge. Hairline lines on the hardest edges catching the light."
+      : "Brush only. Razor lines on the hardest edges catching the light.",
+    watch: air
+      ? "Airbrush down, fine brush up. Chasing edge lines with the airbrush just fogs the whole area."
+      : "Hairline lines, brightest mix. If it looks chalky, thin it; if too stark, glaze the midtone back over." });
   s.push({ id: "details", name: "Details & accents", mode: "paint", iso: null,
-    note: "Eyes, teeth, scars, gems, metals. Drop your accent colors in here.",
+    note: air
+      ? "Brush work: eyes, teeth, scars, gems, metals, accents. The airbrush is parked for these."
+      : "Eyes, teeth, scars, gems, metals. Drop your accent colors in here.",
     watch: "A complementary accent in a recess adds life — but one focal accent, not ten competing ones." });
   s.push({ id: "varnish", name: "Varnish", mode: "paint", iso: null,
-    note: "Seal it. Matte for skin and cloth, gloss for eyes, gems, and wet effects.",
-    watch: "Varnish on a humid day clouds white. Thin coats, dry room." });
+    note: air
+      ? "Airbrush an even, thin varnish — matte for skin and cloth, gloss for eyes, gems, and wet effects."
+      : "Seal it. Matte for skin and cloth, gloss for eyes, gems, and wet effects.",
+    watch: air
+      ? "Varnish too close beads; on a humid day it clouds white. Thin coats, low pressure, dry room."
+      : "Varnish on a humid day clouds white. Thin coats, dry room." });
   return s;
 }
 
 /* ============================== FIGURE VIEW ============================== */
-function FigureView({ label, regions, L, ramp, mode, isoTier, tierKeys, glazeOn, glazeLayers, pooling, viewBox = "0 0 200 460", svgExtra = "" }) {
+function FigureView({ label, regions, L, ramp, mode, isoTier, tierKeys, glazeOn, glazeLayers, pooling, viewBox = "0 0 200 460", svgExtra = "", sprayOn = false, focus = 0.5, sprayColor = "#cfe3ef" }) {
   return (
     <div className="flex flex-col items-center min-w-0">
       <svg viewBox={viewBox} preserveAspectRatio="xMidYMid meet" className={"w-full h-auto " + svgExtra}>
@@ -402,11 +522,15 @@ function FigureView({ label, regions, L, ramp, mode, isoTier, tierKeys, glazeOn,
           const b = brightness(r.n, L);
           const idx = tierIndex(b, ramp.length);
           let fill;
-          if (mode === "prime") fill = "#1b1b1b";
+          let dim = isoTier != null && tierKeys[idx] !== isoTier;
+          if (sprayOn) {
+            const cov = sprayCoverage(r.n, L, focus);
+            fill = mix("#33322d", sprayColor, cov); // bare primer -> paint by coverage
+            dim = false;
+          } else if (mode === "prime") fill = "#1b1b1b";
           else if (mode === "zenithal") fill = valueGrey(b);
           else if (glazeOn) fill = glazeColor(b, glazeLayers, pooling);
           else fill = ramp[idx];
-          const dim = isoTier != null && tierKeys[idx] !== isoTier;
           return (
             <polygon key={i} points={r.p} fill={fill}
               opacity={dim ? 0.12 : 1}
@@ -516,14 +640,23 @@ export default function App() {
   const [status, setStatus] = useState("");
   const [model, setModel] = useState(null); // null = chooser screen
   const [glazeOn, setGlazeOn] = useState(false);
+  const [method, setMethod] = useState("brush");
+  const [spray, setSpray] = useState(false);
+  const [focus, setFocus] = useState(0.5);
   const [pooling, setPooling] = useState(0.6);
   const [glazeLayers, setGlazeLayers] = useState(() => defaultGlaze(generateRamp("#5f8a4a", 5), 3));
 
   const L = useMemo(() => lightVector(az, el), [az, el]);
   const tiers = useMemo(() => tierMeta(numSteps), [numSteps]);
   const tierKeys = tiers.map((t) => t.key);
-  const stages = useMemo(() => buildStages(numSteps), [numSteps]);
+  const stages = useMemo(() => buildStages(numSteps, method), [numSteps, method]);
   const stage = stages.find((s) => s.id === activeStage) || stages[0];
+  const sprayActive = spray && method === "airbrush";
+  const sprayColor = useMemo(() => {
+    const k = stage && stage.iso;
+    if (k) { const i = tierKeys.indexOf(k); if (i >= 0) return ramp[i]; }
+    return ramp[ramp.length - 1];
+  }, [stage, tierKeys, ramp]);
   const views = model ? MODELS[model].views : MODELS.bust.views;
   const previewRegions = frontOf(views);
 
@@ -552,7 +685,7 @@ export default function App() {
 
   const save = async () => {
     const nm = name.trim(); if (!nm) { setStatus("Name it first."); return; }
-    const recipe = { base, numSteps, ramp, accents, az, el, done, glazeOn, pooling, glazeLayers };
+    const recipe = { base, numSteps, ramp, accents, az, el, done, glazeOn, pooling, glazeLayers, method, spray, focus };
     if (!window.storage) { setStatus("Storage unavailable in preview."); return; }
     try { await window.storage.set("recipe:" + nm, JSON.stringify(recipe)); setStatus("Saved “" + nm + "”."); refreshList(); }
     catch { setStatus("Save failed."); }
@@ -565,6 +698,8 @@ export default function App() {
       setBase(r.base); setNumSteps(r.numSteps); setRamp(r.ramp);
       setAccents(r.accents || []); setAz(r.az); setEl(r.el); setDone(r.done || {}); setPreviewAccent(null);
       setGlazeOn(!!r.glazeOn); setPooling(typeof r.pooling === "number" ? r.pooling : 0.6);
+      setMethod(r.method === "airbrush" ? "airbrush" : "brush");
+      setSpray(!!r.spray); setFocus(typeof r.focus === "number" ? r.focus : 0.5);
       setGlazeLayers(Array.isArray(r.glazeLayers) && r.glazeLayers.length ? r.glazeLayers : defaultGlaze(r.ramp, 3));
       setName(nm); setStatus("Loaded “" + nm + "”.");
     } catch { setStatus("Load failed."); }
@@ -589,10 +724,18 @@ export default function App() {
           <h1 className="text-2xl sm:text-3xl font-extrabold uppercase tracking-wide leading-none mb-1.5">
             The <span style={{ color: ramp[ramp.length - 1] }}>Light</span> Bench
           </h1>
-          <button onClick={() => setModel(null)}
-            className="text-[11px] text-stone-400 hover:text-stone-200 border border-stone-700 hover:border-stone-500 rounded-full px-3 py-1.5 mb-1">
-            Model: <span className="text-stone-200">{MODELS[model].label}</span> · change
-          </button>
+          <div className="flex items-center gap-2 mb-1">
+            <div className="flex items-center rounded-full border border-stone-700 overflow-hidden text-[11px]" title="Switch the Steps panel between brush and airbrush workflows">
+              <button onClick={() => setMethod("brush")}
+                className={"px-3 py-1.5 transition-colors " + (method === "brush" ? "bg-stone-700 text-stone-100" : "text-stone-400 hover:text-stone-200")}>Brush</button>
+              <button onClick={() => setMethod("airbrush")}
+                className={"px-3 py-1.5 transition-colors " + (method === "airbrush" ? "bg-sky-700/70 text-stone-100" : "text-stone-400 hover:text-stone-200")}>Airbrush</button>
+            </div>
+            <button onClick={() => setModel(null)}
+              className="text-[11px] text-stone-400 hover:text-stone-200 border border-stone-700 hover:border-stone-500 rounded-full px-3 py-1.5">
+              Model: <span className="text-stone-200">{MODELS[model].label}</span> · change
+            </button>
+          </div>
         </div>
         <p className="text-stone-400 text-[13px] max-w-2xl">
           One light, one figure, four views. Move the light and watch where each value lands. Build a recipe,
@@ -610,6 +753,7 @@ export default function App() {
                   <FigureView key={v.key} label={v.label} regions={v.regions} L={L} ramp={ramp}
                     mode={stage.mode} isoTier={stage.iso} tierKeys={tierKeys}
                     glazeOn={glazeOn} glazeLayers={glazeLayers} pooling={pooling}
+                    sprayOn={sprayActive} focus={focus} sprayColor={sprayColor}
                     svgExtra="lg:max-h-[27vh]" />
                 ))}
               </div>
@@ -620,6 +764,7 @@ export default function App() {
                       viewBox="0 0 220 150" L={L} ramp={ramp}
                       mode={stage.mode} isoTier={stage.iso} tierKeys={tierKeys}
                       glazeOn={glazeOn} glazeLayers={glazeLayers} pooling={pooling}
+                      sprayOn={sprayActive} focus={focus} sprayColor={sprayColor}
                       svgExtra="lg:max-h-[15vh]" />
                   </div>
                 </div>
@@ -627,7 +772,8 @@ export default function App() {
               <div className="mt-3 pt-3 border-t border-stone-700/50 flex items-center justify-between">
                 <span className="text-[10px] uppercase tracking-[0.2em] text-stone-500">Showing</span>
                 <span className="text-xs text-stone-300 font-medium">
-                  {stage.name}{glazeOn && (stage.mode === "paint") ? <span className="text-sky-300"> · glaze</span> : null}
+                  {sprayActive ? <span className="text-sky-300">Spray coverage · {stage.name}</span>
+                    : <>{stage.name}{glazeOn && (stage.mode === "paint") ? <span className="text-sky-300"> · glaze</span> : null}</>}
                 </span>
               </div>
             </div>
@@ -650,7 +796,7 @@ export default function App() {
             </div>
             <div className="flex-1 w-full space-y-3">
               <Slider label="Orbit (around figure)" value={az} min={0} max={360} onChange={setAz} suffix="°" />
-              <Slider label="Height (overhead → low)" value={el} min={-20} max={90} onChange={setEl} suffix="°" />
+              <Slider label="Height (low → overhead)" value={el} min={-20} max={90} onChange={setEl} suffix="°" />
               <div className="flex flex-wrap gap-2 pt-1">
                 {[["Zenithal", 20, 86], ["Front", 0, 32], ["Left", 90, 32], ["Right", 270, 32], ["Back", 180, 32]]
                   .map(([t, a, e]) => (
@@ -663,6 +809,39 @@ export default function App() {
             </div>
           </div>
         </Section>
+
+        {method === "airbrush" && (
+        <Section icon={<Droplets size={15} />} title="Spray cone">
+          <p className="text-[11px] text-stone-500 mb-3 leading-snug">
+            Your light direction <span className="text-stone-300">is the nozzle</span>. Turn this on to see where paint
+            actually lands — planes angled toward the nozzle get coated, planes facing away stay bare primer. Aim with
+            Orbit / Height above.
+          </p>
+          <div className="flex items-center gap-3 mb-1">
+            <button onClick={() => setSpray((v) => !v)}
+              className={"relative w-12 h-6 rounded-full transition-colors flex-none " + (spray ? "bg-sky-600" : "bg-stone-700")}>
+              <span className={"absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all " + (spray ? "left-6" : "left-0.5")} />
+            </button>
+            <div>
+              <div className="text-sm text-stone-200 font-medium">{spray ? "Showing spray coverage" : "Show where the spray lands"}</div>
+              <div className="text-[11px] text-stone-500">{spray
+                ? <>Bare planes were missed by this pass. Spraying: <span style={{ color: sprayColor }}>{stage.name}</span>.</>
+                : "Reframes the figures as paint coverage instead of value."}</div>
+            </div>
+          </div>
+          {spray && (
+            <div className="mt-4">
+              <Slider label="Cone focus (wide / feathered → tight / focused)" value={focus * 100} min={0} max={100}
+                onChange={(v) => setFocus(v / 100)} suffix="%" />
+              <p className="text-[11px] text-amber-300/80 leading-snug mt-2">
+                <b className="text-amber-300">Watch for:</b> a wide cone feathers paint onto angled planes — soft and
+                forgiving, but more overspray. A tight cone hits only what directly faces the nozzle — clean, but slow and
+                easy to leave gaps. Undersides stay bare until you aim from below.
+              </p>
+            </div>
+          )}
+        </Section>
+        )}
 
         {/* ===== RECIPE BUILDER ===== */}
         <Section icon={<Palette size={15} />} title="Recipe">
@@ -841,7 +1020,9 @@ export default function App() {
 
         {/* ===== SEQUENCER ===== */}
         <Section icon={<Layers size={15} />} title="Steps">
-          <p className="text-[11px] text-stone-500 mb-3">Tap a step to isolate where it goes on the figure above.</p>
+          <p className="text-[11px] text-stone-500 mb-3">{method === "airbrush"
+            ? "Airbrush passes in order — pressure, thinning, and spray angle per step. Tap one to isolate where it lands."
+            : "Brush steps in order. Tap one to isolate where it goes on the figure above."}</p>
           <div className="space-y-1.5">
             {stages.map((s, i) => {
               const active = s.id === activeStage;

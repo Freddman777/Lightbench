@@ -14,10 +14,21 @@ Just **double-click the `.html` file** — it runs in any web browser, with no i
 
 ---
 
+## Brush or airbrush?
+
+Up in the top corner there's a **Brush / Airbrush** switch. It sets which *workflow* the app coaches you through — it doesn't change the figure or the colors, just the advice.
+
+- **Brush** (default) — the classic order, with brush-painter notes and warnings.
+- **Airbrush** — every step's instructions switch to spray logic: thinning, pressure (PSI), spray distance and angle, plus the airbrush-specific failure modes (pooling and spider-webbing from spraying too close, chalkiness from paint too thick or pressure too high, the zenithal getting buried, tip-dry spitting into a fine pass). The Edge and Details steps tell you to put the airbrush down and pick up a brush — the honest hybrid reality.
+
+Airbrush mode also unlocks the **Spray cone** (see below). The choice is remembered with your saved recipes.
+
+---
+
 ## The sections, one by one
 
 ### 1. Choose a model
-When you open the app you pick what you're painting — a **Bust**, a **Standing figure**, or a **Rifle stance** (arms raised holding a rifle at an angle, which adds asymmetry and angled planes). This just decides which shape you see. Everything else works the same on any model, and a color scheme you build carries over between them. Once you're in, a small **"Model: … · change"** button up top lets you switch without losing your colors.
+When you open the app you pick what you're painting — a **Bust**, a **Standing figure**, a **Rifle stance** (arms raised holding a rifle at an angle, which adds asymmetry and angled planes), or a **Dual wield** stance (arms thrown out wide, a raised pistol in one hand and a blade in the other, on a bent-knee braced stance — the most extreme limb angles and the most varied held-object surfaces). This just decides which shape you see. Everything else works the same on any model, and a color scheme you build carries over between them. Once you're in, a small **"Model: … · change"** button up top lets you switch without losing your colors.
 
 ### 2. The views
 This is the *output*, not a control. You see the model from the **front, both sides, the back, and from directly above** at the same time. The four side views sit in a grid; the top-down view sits in its own panel below them, like an orthographic drawing sheet. As you change the light or the colors, every view updates together — so you can see that lighting the front means the back falls into shadow, and that an overhead (zenithal) light makes the whole top view glow. On a computer the figure stays put while the controls scroll; on a phone it sits on top.
@@ -33,6 +44,16 @@ Two sliders aim a single light:
 Push Height all the way up for a **zenithal** light (straight down): tops bright, undersides dark. Quick buttons (Zenithal, Front, Left, Right, Back) jump to common setups.
 
 > Answers the question: **where does light land?**
+
+#### Spray cone (airbrush mode only)
+
+In Airbrush mode, a **Spray cone** panel appears here. Its whole idea: **your light direction is the nozzle.** Turn on *"Show where the spray lands"* and the figures stop showing value and start showing **coverage** — which planes the spray actually hits from where you're aiming.
+
+- Planes angled toward the nozzle get coated in the current step's color; planes facing away stay **bare primer** (dark). That hard cutoff is the lesson the soft light can't teach — undersides stay bare until you aim from below, which is exactly why you reposition the model or the nozzle mid-session.
+- The **Cone focus** slider runs from *wide / feathered* (paint bleeds onto angled planes — soft and forgiving, but more overspray) to *tight / focused* (only what directly faces the nozzle — clean, but slow and easy to leave gaps).
+- It follows the **Steps**: tap Base, then Highlight, and the coverage shows each pass's footprint in that pass's color. Aim with the same Orbit / Height sliders above.
+
+> Answers the question: **where does paint land?**
 
 ### 4. Recipe (your colors)
 Pick a base color and how many steps you want (3, 4, or 5). The tool builds the full ladder — shadow, base, midtone(s), highlight — using the rule real painters use: **highlights get lighter and warmer** (toward yellow), **shadows get darker and cooler** (toward blue). That warm-to-cool shift is what makes paint look lit instead of flat.
@@ -66,10 +87,10 @@ The suggestions (Complementary, Analogous, Triadic) are computed from your base 
 > Answers the question: **do my colors work together?**
 
 ### 7. Steps
-The real-world painting order: **Prime → Zenithal → Base → Shade → Highlights → Details → Varnish.** Tap any step and the figure *isolates* where that step goes (everything else dims), with a short note and a **"Watch for:"** warning of the common mistake at that stage. Check off steps as you finish.
+The real-world painting order: **Prime → Zenithal → Base → Shade → Highlights → Details → Varnish.** Tap any step and the figure *isolates* where that step goes (everything else dims), with a short note and a **"Watch for:"** warning of the common mistake at that stage. Check off steps as you finish. The notes and warnings rewrite themselves depending on the **Brush / Airbrush** switch at the top.
 
 ### 8. Recipes (save / load)
-Name a scheme and **Save** it. It remembers your colors, light position, glaze settings, and checklist, and survives closing the browser. Schemes are independent of the model, so the same one works on a bust or a full figure.
+Name a scheme and **Save** it. It remembers your colors, light position, glaze settings, brush/airbrush mode, spray cone settings, and checklist, and survives closing the browser. Schemes are independent of the model, so the same one works on a bust or a full figure.
 
 > Saved per browser, per computer — they won't follow you to another device.
 
@@ -109,3 +130,7 @@ Now you have a plan: which light, which colors in which order, where each one go
 | **Recess** | A valley or crevice on the model (where shadow gathers). |
 | **Accent** | A small contrasting color used sparingly for interest. |
 | **Complementary** | The color opposite yours on the wheel; great in shadows. |
+| **Spray cone** | The airbrush's spray, aimed like the light; shows where paint lands rather than where light falls. |
+| **Coverage** | Which planes a spray pass actually hits. Planes facing away from the nozzle stay bare. |
+| **Overspray** | Paint drifting past the intended area — more with a wide/feathered cone, less with a tight one. |
+| **Tip-dry** | Paint drying on the needle tip and spitting specks into a pass; clear it and thin the mix. |
