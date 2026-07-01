@@ -1162,7 +1162,7 @@ export default function App() {
           if (res) {
             const r = JSON.parse(res.value);
             applyRecipe(r);
-            if (r.model && MODELS[r.model] && (r.model !== "custom" || meshCache.custom)) setModel(r.model);
+            // Colors/light/steps are restored, but the app always opens on the model chooser.
             if (typeof r.activeStage === "string") setActiveStage(r.activeStage);
           }
         } catch {}
