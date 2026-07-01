@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
-import { Sun, Save, Trash2, RotateCcw, Plus, Check, Lightbulb, Layers, Palette, Droplets, Download } from "lucide-react";
+import { Sun, Save, Trash2, RotateCcw, Plus, Check, Lightbulb, Layers, Palette, Droplets, Download, Upload } from "lucide-react";
 import { MALE_VERTS, MALE_FACES } from "./male-mesh.js"; // decimated scan (built by decimate.mjs)
 
 /* ============================== COLOR MATH ============================== */
@@ -442,6 +442,7 @@ const MODELS = {
   gun: { label: "Rifle stance", blurb: "Arms raised, rifle held at an angle — asymmetry, foreshortening, and angled planes.", views: GUN },
   dual: { label: "Dual wield", blurb: "Arms thrown out — pistol raised high, blade out. Extended limbs and two held items at different angles.", views: DUAL },
   male: { label: "3D view", blurb: "A realistic figure you rotate in 3D — drag to read light across real anatomy.", only3d: true },
+  custom: { label: "Imported model", blurb: "Your own STL or OBJ, simplified so the planes read clearly.", only3d: true, custom: true },
 };
 const frontOf = (views) => views.find((v) => v.key === "front").regions;
 
@@ -662,14 +663,26 @@ function segment(p0, p1, r0, r1, sides) {
 // (a crevice — armpit, neck, between legs) gets a lower ao, so recesses read dark. One-time.
 function computeAO(faces, norms) {
   const cents = faces.map(centroid3), R = 36;
+  // Spatial hash (cell size R) so dense imported meshes don't pay the full O(n²):
+  // only faces within R can occlude, and those all live in the 27 neighboring cells.
+  const grid = new Map();
+  cents.forEach((c, j) => {
+    const k = Math.floor(c[0] / R) + "," + Math.floor(c[1] / R) + "," + Math.floor(c[2] / R);
+    const b = grid.get(k); if (b) b.push(j); else grid.set(k, [j]);
+  });
   return faces.map((f, i) => {
     let occ = 0;
-    for (let j = 0; j < faces.length; j++) {
-      if (j === i) continue;
-      const dv = sub3(cents[j], cents[i]), dist = Math.hypot(dv[0], dv[1], dv[2]);
-      if (dist > R || dist < 0.5) continue;
-      const facing = dot3(norm3(dv), norms[i]);
-      if (facing > 0.15) occ += facing * (1 - dist / R);
+    const ci = cents[i], gx = Math.floor(ci[0] / R), gy = Math.floor(ci[1] / R), gz = Math.floor(ci[2] / R);
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+      const bucket = grid.get((gx + dx) + "," + (gy + dy) + "," + (gz + dz));
+      if (!bucket) continue;
+      for (const j of bucket) {
+        if (j === i) continue;
+        const dv = sub3(cents[j], ci), dist = Math.hypot(dv[0], dv[1], dv[2]);
+        if (dist > R || dist < 0.5) continue;
+        const facing = dot3(norm3(dv), norms[i]);
+        if (facing > 0.15) occ += facing * (1 - dist / R);
+      }
     }
     return clamp(1 - occ * 0.55, 0.42, 1);
   });
@@ -687,6 +700,105 @@ function buildMesh(faces) {
 }
 // Expand an indexed mesh (shared verts + face index lists, e.g. from the OBJ decimator).
 function buildMeshIndexed(verts, faceIdx) { return buildMesh(faceIdx.map((f) => f.map((i) => verts[i]))); }
+
+/* ---- Import your own model (STL/OBJ) — parse, normalize, decimate in-browser. ---- */
+// Binary or ASCII STL -> triangle soup (verts get welded by the decimator's clustering).
+function parseSTL(buf) {
+  const bytes = new Uint8Array(buf);
+  if (bytes.length < 84) throw new Error("File too small to be an STL.");
+  const dv = new DataView(buf);
+  const isBinary = 84 + dv.getUint32(80, true) * 50 === bytes.length; // size math beats the "solid" prefix check
+  const verts = [], faces = [];
+  if (isBinary) {
+    const n = dv.getUint32(80, true);
+    for (let i = 0; i < n; i++) {
+      const o = 84 + i * 50 + 12, f = []; // +12 skips the stored normal (recomputed from winding)
+      for (let k = 0; k < 3; k++) {
+        f.push(verts.length);
+        verts.push([dv.getFloat32(o + k * 12, true), dv.getFloat32(o + k * 12 + 4, true), dv.getFloat32(o + k * 12 + 8, true)]);
+      }
+      faces.push(f);
+    }
+  } else {
+    const txt = new TextDecoder().decode(buf);
+    if (!/^\s*solid/.test(txt)) throw new Error("Not a recognizable STL file.");
+    const re = /vertex\s+([-\d.eE+]+)\s+([-\d.eE+]+)\s+([-\d.eE+]+)/g;
+    let m, tri = [];
+    while ((m = re.exec(txt))) {
+      tri.push(verts.length); verts.push([+m[1], +m[2], +m[3]]);
+      if (tri.length === 3) { faces.push(tri); tri = []; }
+    }
+  }
+  return { verts, faces };
+}
+function parseOBJ(txt) {
+  const verts = [], faces = [];
+  for (const line of txt.split("\n")) {
+    if (line[0] === "v" && line[1] === " ") {
+      const p = line.split(/\s+/); verts.push([+p[1], +p[2], +p[3]]);
+    } else if (line[0] === "f" && line[1] === " ") {
+      const p = line.trim().split(/\s+/), idx = [];
+      for (let i = 1; i < p.length; i++) idx.push(parseInt(p[i].split("/")[0], 10) - 1);
+      faces.push(idx);
+    }
+  }
+  return { verts, faces };
+}
+// Stand the model up (most print/scan files are z-up; the app is y-up, +z front),
+// then center it and scale to croquis height so lighting/AO/camera behave the same.
+function normalizeVerts(verts) {
+  const bbox = (vs) => {
+    const mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
+    for (const v of vs) for (let k = 0; k < 3; k++) { if (v[k] < mn[k]) mn[k] = v[k]; if (v[k] > mx[k]) mx[k] = v[k]; }
+    return { mn, mx };
+  };
+  let { mn, mx } = bbox(verts);
+  if ((mx[2] - mn[2]) > (mx[1] - mn[1]) * 1.2) { // taller in z than y -> z-up; rotate +90° about x (keeps winding)
+    verts = verts.map((v) => [v[0], v[2], -v[1]]);
+    ({ mn, mx } = bbox(verts));
+  }
+  const c = [(mn[0] + mx[0]) / 2, (mn[1] + mx[1]) / 2, (mn[2] + mx[2]) / 2];
+  const s = 170 / Math.max(mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2], 1e-9);
+  return verts.map((v) => [(v[0] - c[0]) * s, (v[1] - c[1]) * s, (v[2] - c[2]) * s]);
+}
+// Vertex clustering (same approach as decimate.mjs): snap verts to a coarse grid, merge to
+// the cell average, rebuild faces. Coarsen the grid until the face budget is met.
+function decimateMesh(verts, faces, target = 3400) {
+  for (const N of [192, 144, 108, 84, 64, 48, 36, 27, 20, 15]) {
+    const mn = [Infinity, Infinity, Infinity];
+    let ext = 0;
+    for (const v of verts) for (let k = 0; k < 3; k++) if (v[k] < mn[k]) mn[k] = v[k];
+    for (const v of verts) for (let k = 0; k < 3; k++) if (v[k] - mn[k] > ext) ext = v[k] - mn[k];
+    const cell = ext / N, cellMap = new Map(), sum = [], cnt = [], vToCell = new Int32Array(verts.length);
+    for (let i = 0; i < verts.length; i++) {
+      const v = verts[i];
+      const key = Math.floor((v[0] - mn[0]) / cell) + "," + Math.floor((v[1] - mn[1]) / cell) + "," + Math.floor((v[2] - mn[2]) / cell);
+      let id = cellMap.get(key);
+      if (id === undefined) { id = cnt.length; cellMap.set(key, id); sum.push([0, 0, 0]); cnt.push(0); }
+      sum[id][0] += v[0]; sum[id][1] += v[1]; sum[id][2] += v[2]; cnt[id]++;
+      vToCell[i] = id;
+    }
+    const newVerts = sum.map((s, id) => [s[0] / cnt[id], s[1] / cnt[id], s[2] / cnt[id]]);
+    const newFaces = [], seen = new Set();
+    for (const f of faces) {
+      const m = [];
+      for (const vi of f) { const c = vToCell[vi]; if (m.length === 0 || m[m.length - 1] !== c) m.push(c); }
+      if (m.length > 1 && m[0] === m[m.length - 1]) m.pop();
+      if (m.length < 3) continue;
+      const key = [...m].sort((a, b) => a - b).join(",");
+      if (seen.has(key)) continue; seen.add(key);
+      newFaces.push(m);
+    }
+    if (newFaces.length <= target) return { verts: newVerts.map((v) => v.map((x) => +x.toFixed(2))), faces: newFaces };
+  }
+  throw new Error("Couldn't decimate this mesh to a renderable size.");
+}
+// Full import pipeline: file -> parsed -> normalized -> decimated (ready to store/build).
+function importMeshFromFile(name, buf, target = 3400) {
+  const parsed = /\.obj$/i.test(name) ? parseOBJ(new TextDecoder().decode(buf)) : parseSTL(buf);
+  if (!parsed.faces.length) throw new Error("No geometry found in that file.");
+  return decimateMesh(normalizeVerts(parsed.verts), parsed.faces, target);
+}
 
 // ---- Generic croquis figures (~8 heads tall), higher facet counts + sculpted side
 //      profile (chest forward, seat back, posture S-curve via the prism z-lean) and
@@ -943,6 +1055,9 @@ export default function App() {
   const [orbColor, setOrbColor] = useState("#3fb8ff");
   const [orbInt, setOrbInt] = useState(0.5);
   const [valueMode, setValueMode] = useState(false); // greyscale value-study view (transient, not saved)
+  const [customReady, setCustomReady] = useState(false); // an imported STL/OBJ mesh is loaded
+  const [importMsg, setImportMsg] = useState("");
+  const [detail, setDetail] = useState(3400); // face budget for imported models
   const [pooling, setPooling] = useState(0.6);
   const [glazeLayers, setGlazeLayers] = useState(() => defaultGlaze(generateRamp("#5f8a4a", 5), 3));
 
@@ -1038,12 +1153,16 @@ export default function App() {
   useEffect(() => {
     (async () => {
       if (window.storage) {
+        try { // restore an imported mesh first, so a "custom" session can reopen onto it
+          const cm = await window.storage.get("custommesh:last");
+          if (cm) { const d = JSON.parse(cm.value); meshCache.custom = buildMeshIndexed(d.verts, d.faces); if (d.target) setDetail(d.target); setCustomReady(true); }
+        } catch {}
         try {
           const res = await window.storage.get("session:last");
           if (res) {
             const r = JSON.parse(res.value);
             applyRecipe(r);
-            if (r.model && MODELS[r.model]) setModel(r.model);
+            if (r.model && MODELS[r.model] && (r.model !== "custom" || meshCache.custom)) setModel(r.model);
             if (typeof r.activeStage === "string") setActiveStage(r.activeStage);
           }
         } catch {}
@@ -1120,7 +1239,21 @@ export default function App() {
   const orbCx = 26 + 18 * Math.sin((orbAz * Math.PI) / 180) * Math.cos((orbEl * Math.PI) / 180);
   const orbCy = 26 - 18 * Math.cos((orbAz * Math.PI) / 180) * Math.cos((orbEl * Math.PI) / 180);
 
-  if (!model) return <Chooser ramp={ramp} L={L} onPick={setModel} />;
+  // Import an STL/OBJ: parse -> normalize -> decimate -> cache + persist, then open it.
+  const importModel = async (file, target = detail) => {
+    setDetail(target);
+    setImportMsg("Reading “" + file.name + "”…");
+    try {
+      const dec = importMeshFromFile(file.name, await file.arrayBuffer(), target);
+      dec.target = target; // remembered so the detail picker restores with the mesh
+      meshCache.custom = buildMeshIndexed(dec.verts, dec.faces);
+      setCustomReady(true); setImportMsg("");
+      try { await window.storage?.set("custommesh:last", JSON.stringify(dec)); } catch {}
+      setModel("custom");
+    } catch (e) { setImportMsg(String(e?.message || e)); }
+  };
+
+  if (!model) return <Chooser ramp={ramp} L={L} onPick={setModel} onImport={importModel} customReady={customReady} importMsg={importMsg} detail={detail} onDetail={setDetail} />;
 
   return (
     <div className="min-h-screen w-full text-stone-200 lg:h-screen lg:overflow-hidden flex flex-col"
@@ -1142,6 +1275,15 @@ export default function App() {
               className="text-[11px] text-stone-400 hover:text-stone-200 border border-stone-700 hover:border-stone-500 rounded-full px-3 py-1.5">
               Model: <span className="text-stone-200">{MODELS[model].label}</span> · change
             </button>
+            {model === "custom" && (
+              <label className="text-[11px] text-stone-400 hover:text-stone-200 border border-stone-700 hover:border-stone-500 rounded-full px-3 py-1.5 cursor-pointer"
+                title="Load a different STL/OBJ in place of this one (same detail setting)">
+                <input type="file" accept=".stl,.obj" className="hidden"
+                  onChange={(e) => { const f = e.target.files?.[0]; if (f) importModel(f); e.target.value = ""; }} />
+                Replace file…
+              </label>
+            )}
+            {model === "custom" && importMsg && <span className="text-[11px] text-amber-400">{importMsg}</span>}
           </div>
         </div>
         <p className="text-stone-400 text-[13px] max-w-2xl">
@@ -1607,7 +1749,7 @@ function MiniFigure({ regions, ramp, L }) {
   );
 }
 
-function Chooser({ ramp, L, onPick }) {
+function Chooser({ ramp, L, onPick, onImport, customReady, importMsg, detail, onDetail }) {
   return (
     <div className="min-h-screen w-full text-stone-200 flex flex-col items-center justify-center px-4 py-10"
       style={{ background: "#141611", fontFamily: "Segoe UI, system-ui, sans-serif" }}>
@@ -1620,7 +1762,7 @@ function Chooser({ ramp, L, onPick }) {
         a color scheme you build carries across models.
       </p>
       <div className="grid grid-cols-2 gap-4 w-full max-w-xl">
-        {Object.entries(MODELS).map(([key, m]) => (
+        {Object.entries(MODELS).filter(([, m]) => !m.custom).map(([key, m]) => (
           <button key={key} onClick={() => onPick(key)}
             className="group rounded-xl border border-stone-700/70 hover:border-stone-400 bg-stone-900/30 p-4 transition-colors text-left">
             <div className="h-40 flex items-center justify-center mb-3">
@@ -1632,6 +1774,36 @@ function Chooser({ ramp, L, onPick }) {
             <div className="text-[11px] text-stone-500 leading-snug mt-0.5">{m.blurb}</div>
           </button>
         ))}
+        <label className="group rounded-xl border border-dashed border-stone-600 hover:border-stone-400 bg-stone-900/30 p-4 transition-colors text-left cursor-pointer">
+          <input type="file" accept=".stl,.obj" className="hidden"
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) onImport(f); e.target.value = ""; }} />
+          <div className="h-40 flex items-center justify-center mb-3">
+            {customReady
+              ? <div className="w-[118px]" title="Open your imported model"
+                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); onPick("custom"); }}>
+                  <Model3D mesh={MESH3D.custom} L={L} ramp={ramp} mode="paint" noDrag initRot={{ yaw: -0.4, pitch: 0.08 }} />
+                </div>
+              : <Upload size={40} className="text-stone-500 group-hover:text-stone-300 transition-colors" />}
+          </div>
+          <div className="text-sm font-semibold text-stone-100 group-hover:text-white">Import your model</div>
+          <div className="text-[11px] text-stone-500 leading-snug mt-0.5">
+            {customReady
+              ? "Click the figure to reopen it, or the card to load a different STL/OBJ."
+              : "Load an STL or OBJ of the mini on your bench — it's simplified so the planes read clearly."}
+          </div>
+          <div className="flex items-center gap-1 mt-2" onClick={(e) => e.preventDefault()}>
+            <span className="text-[10px] uppercase tracking-wider text-stone-600 mr-1">Detail</span>
+            {[["Standard", 3400], ["High", 8000], ["Ultra", 14000]].map(([lb, n]) => (
+              <button key={n} type="button" onClick={(e) => { e.stopPropagation(); onDetail(n); }}
+                title={n.toLocaleString() + " faces max — more detail, but rotation gets heavier"}
+                className={"px-2 py-0.5 rounded-full text-[10px] border transition-colors " +
+                  (detail === n ? "border-stone-300 text-stone-100 bg-stone-700/60" : "border-stone-700 text-stone-500 hover:text-stone-300")}>
+                {lb}
+              </button>
+            ))}
+          </div>
+          {importMsg && <div className="text-[11px] text-amber-400 leading-snug mt-1">{importMsg}</div>}
+        </label>
       </div>
       <p className="text-[11px] text-stone-600 mt-8 max-w-md text-center">
         Each pose works the same — the light, recipe, and steps don't care which you pick. A fully posable figure is the planned next step.
