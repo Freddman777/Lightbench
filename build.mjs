@@ -24,7 +24,7 @@ writeFileSync("browser.jsx", src);
 // 2. Bundle React + icons + app into one minified IIFE (no CDN, runs offline).
 await build({
   entryPoints: ["browser.jsx"],
-  bundle: true, minify: true, format: "iife",
+  bundle: true, minify: true, format: "iife", legalComments: "none",
   outfile: "app.js", loader: { ".jsx": "jsx" },
   define: { "process.env.NODE_ENV": '"production"' },
 });

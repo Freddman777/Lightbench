@@ -660,8 +660,8 @@ function segment(p0, p1, r0, r1, sides) {
 }
 // Cheap precomputed ambient occlusion: a face with lots of other geometry in front of it
 // (a crevice — armpit, neck, between legs) gets a lower ao, so recesses read dark. One-time.
-function computeAO(faces) {
-  const cents = faces.map(centroid3), norms = faces.map(faceNormal), R = 36;
+function computeAO(faces, norms) {
+  const cents = faces.map(centroid3), R = 36;
   return faces.map((f, i) => {
     let occ = 0;
     for (let j = 0; j < faces.length; j++) {
@@ -682,7 +682,8 @@ function buildMesh(faces) {
   const center = [(mn[0] + mx[0]) / 2, (mn[1] + mx[1]) / 2, (mn[2] + mx[2]) / 2]; // bbox center frames better
   let radius = 1;
   for (const p of all) { const d = Math.hypot(p[0] - center[0], p[1] - center[1], p[2] - center[2]); if (d > radius) radius = d; }
-  return { faces, ao: computeAO(faces), center, radius };
+  const normals = faces.map(faceNormal); // precomputed once — world normals never change per mesh
+  return { faces, normals, ao: computeAO(faces, normals), center, radius };
 }
 // Expand an indexed mesh (shared verts + face index lists, e.g. from the OBJ decimator).
 function buildMeshIndexed(verts, faceIdx) { return buildMesh(faceIdx.map((f) => f.map((i) => verts[i]))); }
@@ -719,8 +720,10 @@ function armDown(s) {
     ...hand([24 * s, 2, 3]),
   ];
 }
-const STANDING_MESH = buildMesh([...bodyCore(), ...armDown(1), ...armDown(-1)]);
-const GUN_MESH = buildMesh([
+// Mesh construction (especially the O(n²) AO pass on the ~2.8k-face scan) is deferred
+// until a model is actually shown, so page load doesn't pay for meshes never opened.
+const buildStanding = () => buildMesh([...bodyCore(), ...armDown(1), ...armDown(-1)]);
+const buildGun = () => buildMesh([
   ...bodyCore(),
   // arms raised onto a rifle tilted up across the front (asymmetric, angled planes)
   ...segment([20, 56, 2], [18, 36, 11], 7, 5.5, 10),  // right upper arm (out & forward)
@@ -732,7 +735,7 @@ const GUN_MESH = buildMesh([
   ...segment([16, 18, 17], [-32, 56, 13], 3.5, 2.5, 9), // rifle: low-right -> up-left, in front
 ]);
 // Bust: the same head/neck on broad shoulders, cut at the chest on a base.
-const BUST_MESH = buildMesh([
+const buildBust = () => buildMesh([
   ...prism(0, 3, 4, 9, 10, 7, 8, 68, 88, 14),     // head
   ...prism(0, 1, 3, 5.5, 5.5, 6, 6, 56, 69, 10),  // neck
   ...prism(0, -1, 3, 16, 12, 24, 13, 30, 58, 16), // shoulders / upper chest (forward)
@@ -740,8 +743,16 @@ const BUST_MESH = buildMesh([
   ...box(0, 5, 0, 30, 8, 20),                     // base
 ]);
 
-const MALE_MESH = buildMeshIndexed(MALE_VERTS, MALE_FACES); // real anatomy, decimated from the OBJ
-const MESH3D = { bust: BUST_MESH, standing: STANDING_MESH, gun: GUN_MESH, male: MALE_MESH };
+const MESH_BUILDERS = {
+  bust: buildBust, standing: buildStanding, gun: buildGun,
+  male: () => buildMeshIndexed(MALE_VERTS, MALE_FACES), // real anatomy, decimated from the OBJ
+};
+const meshCache = {};
+// Lazy MESH3D lookup with the same `MESH3D[key]` shape as before (built once, then cached).
+const MESH3D = new Proxy(meshCache, {
+  get: (c, key) => (c[key] ??= MESH_BUILDERS[key]?.()),
+  has: (c, key) => key in MESH_BUILDERS,
+});
 
 // Canvas renderer — fast enough for the decimated scan (~2-3k faces) where SVG would choke.
 // Same engine: world-space normal -> light -> tier color, flat-shaded; painter's sort + cull;
@@ -751,29 +762,40 @@ const Model3D = React.memo(function Model3D({ mesh, L, ramp, mode, isoTier, tier
   const canvasRef = useRef(null);
   const drag = useRef(null);
   const onDown = (e) => { if (noDrag) return; drag.current = { x: e.clientX, y: e.clientY, ...rot }; e.currentTarget.setPointerCapture?.(e.pointerId); };
+  const raf = useRef(0), pendingRot = useRef(null);
   const onMove = (e) => {
     if (!drag.current) return;
     const dx = e.clientX - drag.current.x, dy = e.clientY - drag.current.y;
-    setRot({ yaw: drag.current.yaw + dx * 0.01, pitch: clamp(drag.current.pitch + dy * 0.01, -1.2, 1.2) });
+    pendingRot.current = { yaw: drag.current.yaw + dx * 0.01, pitch: clamp(drag.current.pitch + dy * 0.01, -1.2, 1.2) };
+    // Pointer events can fire faster than the display refreshes; coalesce to one redraw per frame.
+    if (!raf.current) raf.current = requestAnimationFrame(() => { raf.current = 0; setRot(pendingRot.current); });
   };
   const onUp = (e) => { drag.current = null; e.currentTarget.releasePointerCapture?.(e.pointerId); };
+  useEffect(() => () => cancelAnimationFrame(raf.current), []);
+
+  // Brightness depends on light + mesh only — not rotation — so cache it across drag frames.
+  const brights = useMemo(() => mesh.faces.map((f, i) => brightness(mesh.normals[i], L, mesh.ao[i])), [mesh, L]);
 
   useEffect(() => {
     const cnv = canvasRef.current; if (!cnv) return;
     const ctx = cnv.getContext("2d");
     const W = cnv.width, H = cnv.height, cx = W / 2, cy = H / 2;
     ctx.clearRect(0, 0, W, H);
-    const { faces: mf, ao, center, radius } = mesh;
+    const { faces: mf, normals, center, radius } = mesh;
     const fit = (Math.min(W, H) * 0.46) / radius, camDist = radius * 4.2;
     const cyaw = Math.cos(rot.yaw), syaw = Math.sin(rot.yaw), cpit = Math.cos(rot.pitch), spit = Math.sin(rot.pitch);
     const rotAll = (p) => rotX(rotY(p, cyaw, syaw), cpit, spit);
     const cam = (p) => rotAll(sub3(p, center));
     const project = (v) => { const k = camDist / (camDist - v[2]); return [cx + fit * k * v[0], cy - fit * k * v[1]]; };
     // light uses the world normal (orbit doesn't relight); cull/sort use the camera normal/depth.
-    const vis = mf.map((f, i) => {
-      const wn = faceNormal(f), cn = rotAll(wn), cv = f.map(cam);
-      return { n: wn, cn, cv, depth: cv.reduce((a, v) => a + v[2], 0) / cv.length, b: brightness(wn, L, ao[i]) };
-    }).filter((o) => o.cn[2] > 0.001).sort((a, b) => a.depth - b.depth);
+    const vis = [];
+    for (let i = 0; i < mf.length; i++) {
+      const cn = rotAll(normals[i]);
+      if (cn[2] <= 0.001) continue; // backface cull before doing any more work
+      const cv = mf[i].map(cam);
+      vis.push({ n: normals[i], cv, depth: cv.reduce((a, v) => a + v[2], 0) / cv.length, b: brights[i] });
+    }
+    vis.sort((a, b) => a.depth - b.depth);
     const strokeFaces = mf.length < 300; // facet edges help the low-poly figures, not the dense scan
     let bright = null;
     for (const o of vis) {
@@ -803,7 +825,7 @@ const Model3D = React.memo(function Model3D({ mesh, L, ramp, mode, isoTier, tier
       ctx.fillStyle = g; ctx.beginPath(); ctx.arc(X, Y, 18, 0, Math.PI * 2); ctx.fill();
       ctx.fillStyle = "#fff6da"; ctx.beginPath(); ctx.arc(X, Y, 3, 0, Math.PI * 2); ctx.fill();
     }
-  }, [mesh, L, ramp, mode, isoTier, tierKeys, glazeOn, glazeLayers, pooling, valueMode, sprayOn, focus, sprayColor, orbOn, Lorb, orbColor, orbInt, rot]);
+  }, [mesh, brights, L, ramp, mode, isoTier, tierKeys, glazeOn, glazeLayers, pooling, valueMode, sprayOn, focus, sprayColor, orbOn, Lorb, orbColor, orbInt, rot]);
 
   return (
     <div className="flex flex-col items-center">
@@ -1030,9 +1052,15 @@ export default function App() {
     })();
   }, [applyRecipe]);
   // Save the session whenever it changes (only after the initial restore has run).
+  const saveTimer = useRef(null);
   useEffect(() => {
     if (!ready.current || !window.storage || !model) return;
-    try { window.storage.set("session:last", JSON.stringify({ model, activeStage, base, numSteps, ramp, accents, az, el, done, glazeOn, pooling, glazeLayers, method, spray, focus, orbOn, orbAz, orbEl, orbColor, orbInt })); } catch {}
+    // Debounced: sliders fire this every tick; one write after the user pauses is enough.
+    clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      try { window.storage.set("session:last", JSON.stringify({ model, activeStage, base, numSteps, ramp, accents, az, el, done, glazeOn, pooling, glazeLayers, method, spray, focus, orbOn, orbAz, orbEl, orbColor, orbInt })); } catch {}
+    }, 300);
+    return () => clearTimeout(saveTimer.current);
   }, [model, activeStage, base, numSteps, ramp, accents, az, el, done, glazeOn, pooling, glazeLayers, method, spray, focus, orbOn, orbAz, orbEl, orbColor, orbInt]);
 
   // Export a painting-reference PNG: the figure as shown + value ramp, accents, light & glaze.
