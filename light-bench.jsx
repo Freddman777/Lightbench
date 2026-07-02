@@ -931,6 +931,8 @@ const MESH3D = new Proxy(meshCache, {
 // mild perspective; drag to orbit (light fixed in world). noDrag renders a static thumbnail.
 const Model3D = React.memo(function Model3D({ mesh, L, ramp, mode, isoTier, tierKeys, glazeOn, glazeLayers, pooling, valueMode, sprayOn = false, focus = 0.5, sprayColor = "#cfe3ef", orbOn = false, Lorb = null, orbColor = "#3fb8ff", orbInt = 0.5, noDrag, initRot, zoneRamps = null, zoneMap = null, onPickFace = null, brushSize = 0, onBrushFaces = null }) {
   const [rot, setRot] = useState(initRot || { yaw: -0.5, pitch: 0.12 });
+  const [zoom, setZoom] = useState(1);
+  const ringRef = useRef(null);
   const canvasRef = useRef(null);
   const drag = useRef(null);
   const drawn = useRef([]); // projected polys from the last render (front-to-back order), for click picking
@@ -955,6 +957,12 @@ const Model3D = React.memo(function Model3D({ mesh, L, ramp, mode, isoTier, tier
   };
   const raf = useRef(0), pendingRot = useRef(null);
   const onMove = (e) => {
+    if (ringRef.current && onBrushFaces && brushSize > 0) { // live brush cursor ring
+      const cnv = canvasRef.current, r = cnv.getBoundingClientRect();
+      const d = brushSize * 2 * (r.width / cnv.width), rs = ringRef.current.style;
+      rs.display = "block"; rs.width = rs.height = d + "px";
+      rs.left = (e.clientX - r.left - d / 2) + "px"; rs.top = (e.clientY - r.top - d / 2) + "px";
+    }
     if (!drag.current) return;
     if (drag.current.painting) { brushAt(e); return; }
     const dx = e.clientX - drag.current.x, dy = e.clientY - drag.current.y;
@@ -967,6 +975,7 @@ const Model3D = React.memo(function Model3D({ mesh, L, ramp, mode, isoTier, tier
     const wasPainting = drag.current && drag.current.painting;
     const wasClick = drag.current && !drag.current.painting && !drag.current.moved;
     drag.current = null; e.currentTarget.releasePointerCapture?.(e.pointerId);
+    if (e.type === "pointerleave" && ringRef.current) ringRef.current.style.display = "none";
     if (wasPainting || !wasClick || !onPickFace) return;
     // click (not a drag): pick the frontmost face under the cursor
     const cnv = canvasRef.current, r = cnv.getBoundingClientRect();
@@ -984,6 +993,14 @@ const Model3D = React.memo(function Model3D({ mesh, L, ramp, mode, isoTier, tier
   };
   useEffect(() => () => cancelAnimationFrame(raf.current), []);
 
+  // Scroll to zoom (attached non-passive so the page doesn't scroll underneath).
+  useEffect(() => {
+    const cnv = canvasRef.current; if (!cnv || noDrag) return;
+    const onWheel = (e) => { e.preventDefault(); setZoom((z) => clamp(z * (e.deltaY < 0 ? 1.15 : 1 / 1.15), 0.6, 4)); };
+    cnv.addEventListener("wheel", onWheel, { passive: false });
+    return () => cnv.removeEventListener("wheel", onWheel);
+  }, [noDrag]);
+
   // Brightness depends on light + mesh only — not rotation — so cache it across drag frames.
   const brights = useMemo(() => mesh.faces.map((f, i) => brightness(mesh.normals[i], L, mesh.ao[i])), [mesh, L]);
 
@@ -993,7 +1010,7 @@ const Model3D = React.memo(function Model3D({ mesh, L, ramp, mode, isoTier, tier
     const W = cnv.width, H = cnv.height, cx = W / 2, cy = H / 2;
     ctx.clearRect(0, 0, W, H);
     const { faces: mf, normals, center, radius } = mesh;
-    const fit = (Math.min(W, H) * 0.46) / radius, camDist = radius * 4.2;
+    const fit = (Math.min(W, H) * 0.46 * zoom) / radius, camDist = radius * 4.2;
     const cyaw = Math.cos(rot.yaw), syaw = Math.sin(rot.yaw), cpit = Math.cos(rot.pitch), spit = Math.sin(rot.pitch);
     const rotAll = (p) => rotX(rotY(p, cyaw, syaw), cpit, spit);
     const cam = (p) => rotAll(sub3(p, center));
@@ -1042,14 +1059,27 @@ const Model3D = React.memo(function Model3D({ mesh, L, ramp, mode, isoTier, tier
       ctx.fillStyle = g; ctx.beginPath(); ctx.arc(X, Y, 18, 0, Math.PI * 2); ctx.fill();
       ctx.fillStyle = "#fff6da"; ctx.beginPath(); ctx.arc(X, Y, 3, 0, Math.PI * 2); ctx.fill();
     }
-  }, [mesh, brights, L, ramp, mode, isoTier, tierKeys, glazeOn, glazeLayers, pooling, valueMode, sprayOn, focus, sprayColor, orbOn, Lorb, orbColor, orbInt, rot, zoneRamps, zoneMap, onPickFace]);
+  }, [mesh, brights, L, ramp, mode, isoTier, tierKeys, glazeOn, glazeLayers, pooling, valueMode, sprayOn, focus, sprayColor, orbOn, Lorb, orbColor, orbInt, rot, zoom, zoneRamps, zoneMap, onPickFace]);
 
   return (
-    <div className="flex flex-col items-center">
+    <div className="relative flex flex-col items-center">
       <canvas ref={canvasRef} width={460} height={600}
         className={"w-full h-auto select-none touch-none " + (onPickFace || onBrushFaces ? "cursor-crosshair" : noDrag ? "" : "cursor-grab active:cursor-grabbing")}
         onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerLeave={onUp} />
-      {!noDrag && <div className="mt-1 text-[10px] tracking-[0.25em] uppercase text-stone-400">3D · drag to rotate</div>}
+      <div ref={ringRef} className="pointer-events-none absolute rounded-full border-2 border-amber-300/70" style={{ display: "none" }} />
+      {!noDrag && (
+        <div className="absolute top-2 right-2 flex flex-col gap-1">
+          <button onClick={() => setZoom((z) => clamp(z * 1.25, 0.6, 4))} aria-label="Zoom in"
+            className="w-7 h-7 rounded-md border border-stone-600 bg-stone-900/70 text-stone-300 hover:text-white text-sm leading-none">+</button>
+          <button onClick={() => setZoom((z) => clamp(z / 1.25, 0.6, 4))} aria-label="Zoom out"
+            className="w-7 h-7 rounded-md border border-stone-600 bg-stone-900/70 text-stone-300 hover:text-white text-sm leading-none">−</button>
+          {zoom !== 1 && (
+            <button onClick={() => setZoom(1)} aria-label="Reset zoom"
+              className="w-7 h-7 rounded-md border border-stone-600 bg-stone-900/70 text-stone-400 hover:text-white text-[10px] leading-none">1:1</button>
+          )}
+        </div>
+      )}
+      {!noDrag && <div className="mt-1 text-[10px] tracking-[0.25em] uppercase text-stone-400">3D · drag to rotate · scroll to zoom</div>}
     </div>
   );
 });
@@ -1172,6 +1202,11 @@ export default function App() {
   const [brushSize, setBrushSize] = useState(22);    // brush radius in canvas px
   const [zoneMap2d, setZoneMap2d] = useState({});    // { model: { viewKey: { regionIdx: zone } } }
   const [zoneMap3d, setZoneMap3d] = useState({});    // { model: { faceIdx: zone } }
+  // Collapsible control sections — core ones open by default, specialty tools tucked away.
+  const [openSec, setOpenSec] = useState({ recipe: true, zones: true, light: true });
+  const sec = (k) => ({ open: !!openSec[k], onToggle: () => setOpenSec((s) => ({ ...s, [k]: !s[k] })) });
+  // Status messages surface as a toast and clear themselves.
+  useEffect(() => { if (!status) return; const t = setTimeout(() => setStatus(""), 2600); return () => clearTimeout(t); }, [status]);
   const [pooling, setPooling] = useState(0.6);
   const [glazeLayers, setGlazeLayers] = useState(() => defaultGlaze(generateRamp("#5f8a4a", 5), 3));
 
@@ -1341,6 +1376,7 @@ export default function App() {
             if (typeof r.paintBrand === "string") setPaintBrand(r.paintBrand);
             if (r.zoneMap2d && typeof r.zoneMap2d === "object") setZoneMap2d(r.zoneMap2d);
             if (r.zoneMap3d && typeof r.zoneMap3d === "object") setZoneMap3d(r.zoneMap3d);
+            if (r.openSec && typeof r.openSec === "object") setOpenSec(r.openSec);
           }
         } catch {}
       }
@@ -1354,10 +1390,10 @@ export default function App() {
     // Debounced: sliders fire this every tick; one write after the user pauses is enough.
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
-      try { window.storage.set("session:last", JSON.stringify({ model, activeStage, base, numSteps, ramp, accents, az, el, done, glazeOn, pooling, glazeLayers, method, spray, focus, orbOn, orbAz, orbEl, orbColor, orbInt, paintBrand, extraZones, zoneMap2d, zoneMap3d })); } catch {}
+      try { window.storage.set("session:last", JSON.stringify({ model, activeStage, base, numSteps, ramp, accents, az, el, done, glazeOn, pooling, glazeLayers, method, spray, focus, orbOn, orbAz, orbEl, orbColor, orbInt, paintBrand, extraZones, zoneMap2d, zoneMap3d, openSec })); } catch {}
     }, 300);
     return () => clearTimeout(saveTimer.current);
-  }, [model, activeStage, base, numSteps, ramp, accents, az, el, done, glazeOn, pooling, glazeLayers, method, spray, focus, orbOn, orbAz, orbEl, orbColor, orbInt, paintBrand, extraZones, zoneMap2d, zoneMap3d]);
+  }, [model, activeStage, base, numSteps, ramp, accents, az, el, done, glazeOn, pooling, glazeLayers, method, spray, focus, orbOn, orbAz, orbEl, orbColor, orbInt, paintBrand, extraZones, zoneMap2d, zoneMap3d, openSec]);
 
   // Export a painting-reference PNG: the figure as shown + value ramp, accents, light & glaze.
   const exportPNG = () => {
@@ -1458,6 +1494,12 @@ export default function App() {
   return (
     <div className="min-h-screen w-full text-stone-200 lg:h-screen lg:overflow-hidden flex flex-col"
       style={{ background: "#141611", fontFamily: "Segoe UI, system-ui, sans-serif" }}>
+      {status && (
+        <div role="status" aria-live="polite"
+          className="fixed top-3 right-3 z-50 text-xs text-stone-100 bg-stone-800/95 border border-stone-600 rounded-lg px-3 py-2 shadow-lg">
+          {status}
+        </div>
+      )}
       <div className="max-w-6xl w-full mx-auto px-4 pt-6 pb-3 flex-none">
         <p className="text-[11px] tracking-[0.32em] uppercase text-stone-500 mb-1">Miniature painting · light & value</p>
         <div className="flex items-end justify-between gap-3 flex-wrap">
@@ -1471,6 +1513,10 @@ export default function App() {
               <button onClick={() => setMethod("airbrush")}
                 className={"px-3 py-1.5 transition-colors " + (method === "airbrush" ? "bg-sky-700/70 text-stone-100" : "text-stone-400 hover:text-stone-200")}>Airbrush</button>
             </div>
+            <button onClick={exportPNG} title="Download a reference image to take to the bench"
+              className="flex items-center gap-1 text-[11px] text-stone-400 hover:text-stone-200 border border-stone-700 hover:border-stone-500 rounded-full px-3 py-1.5">
+              <Download size={12} /> Export PNG
+            </button>
             <button onClick={() => setModel(null)}
               className="text-[11px] text-stone-400 hover:text-stone-200 border border-stone-700 hover:border-stone-500 rounded-full px-3 py-1.5">
               Model: <span className="text-stone-200">{MODELS[model].label}</span> · change
@@ -1495,8 +1541,27 @@ export default function App() {
       <div className="max-w-6xl w-full mx-auto px-4 pb-4 flex-1 min-h-0 flex flex-col lg:flex-row gap-5 items-start">
           {/* ===== MODEL PANE (fits to viewport height) ===== */}
           <div className="w-full sticky top-0 z-10 max-h-[42vh] overflow-y-auto bg-[#141611] lg:static lg:z-auto lg:max-h-none lg:bg-transparent lg:w-[36%] lg:flex-none lg:h-full controls-scroll lg:pr-1">
-            <div ref={figRef} className="rounded-xl border border-stone-700/60 p-3"
+            <div ref={figRef} className="relative rounded-xl border border-stone-700/60 p-3"
               style={{ background: "radial-gradient(120% 90% at 50% 0%, #20241b, #141611 75%)" }}>
+              {zonePaint && (
+                <div className="absolute top-2 left-2 right-2 z-20 flex flex-wrap items-center gap-1">
+                  {zoneNames.map((nm, zi) => (
+                    <button key={zi} onClick={() => setActiveZone(zi)} aria-pressed={activeZone === zi}
+                      className={"flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] border " +
+                        (activeZone === zi ? "border-lime-400 text-stone-100 bg-stone-900/90" : "border-stone-600 text-stone-300 bg-stone-900/70 hover:border-stone-400")}>
+                      <span className="w-2.5 h-2.5 rounded-full" style={{ background: zoneRamps[zi][Math.floor(zoneRamps[zi].length / 2)] }} />
+                      {nm}
+                    </button>
+                  ))}
+                  {only3d && (
+                    <button onClick={() => setZoneMode(zoneMode === "patch" ? "brush" : "patch")}
+                      title="Switch between auto fill and brush"
+                      className="px-2 py-1 rounded-full text-[10px] border border-stone-600 text-stone-300 bg-stone-900/70 hover:border-stone-400">
+                      {zoneMode === "patch" ? "auto fill" : "brush"}
+                    </button>
+                  )}
+                </div>
+              )}
               {only3d && MESH3D[model] ? (
                 <Model3D mesh={MESH3D[model]} L={L} ramp={ramp} mode={stage.mode} isoTier={stage.iso}
                   tierKeys={tierKeys} glazeOn={glazeOn} glazeLayers={glazeLayers} pooling={pooling} valueMode={valueMode}
@@ -1568,113 +1633,8 @@ export default function App() {
           {/* ===== CONTROLS PANE (scrolls internally on desktop) ===== */}
           <div className="flex-1 w-full min-w-0 lg:h-full lg:overflow-y-auto lg:pr-2 controls-scroll">
 
-        {/* ===== LIGHT CONTROLS ===== */}
-        <Section icon={<Sun size={15} />} title="Light direction">
-          <div className="flex flex-col sm:flex-row gap-5 items-start">
-            <div className="flex flex-col items-center">
-              <svg viewBox="0 0 52 52" className="w-[68px] h-[68px]">
-                <circle cx="26" cy="26" r="22" fill="#1d201a" stroke="#34382c" />
-                <text x="26" y="9" textAnchor="middle" className="fill-stone-500" style={{ fontSize: 6 }}>FRONT</text>
-                <text x="26" y="49" textAnchor="middle" className="fill-stone-500" style={{ fontSize: 6 }}>BACK</text>
-                <circle cx={cx} cy={cy} r="4" fill={ramp[ramp.length - 1]} />
-              </svg>
-              <div className="text-[10px] text-stone-500 mt-1">{el > 70 ? "overhead" : el < 15 ? "low" : "angled"}</div>
-            </div>
-            <div className="flex-1 w-full space-y-3">
-              <Slider label="Orbit (around figure)" value={az} min={0} max={360} onChange={setAz} suffix="°" />
-              <Slider label="Height (low → overhead)" value={el} min={-20} max={90} onChange={setEl} suffix="°" />
-              <div className="flex flex-wrap gap-2 pt-1">
-                {[["Zenithal", 20, 86], ["Front", 0, 32], ["Left", 90, 32], ["Right", 270, 32], ["Back", 180, 32]]
-                  .map(([t, a, e]) => (
-                    <button key={t} onClick={() => { setAz(a); setEl(e); }}
-                      className="px-3 py-1.5 rounded-full text-xs border border-stone-700 hover:border-stone-500 text-stone-300">
-                      {t}
-                    </button>
-                  ))}
-              </div>
-            </div>
-          </div>
-        </Section>
-
-        {method === "airbrush" && (
-        <Section icon={<Droplets size={15} />} title="Spray cone">
-          <p className="text-[11px] text-stone-500 mb-3 leading-snug">
-            Your light direction <span className="text-stone-300">is the nozzle</span>. Turn this on to see where paint
-            actually lands — planes angled toward the nozzle get coated, planes facing away stay bare primer. Aim with
-            Orbit / Height above.
-          </p>
-          <div className="flex items-center gap-3 mb-1">
-            <button onClick={() => setSpray((v) => !v)} role="switch" aria-checked={spray} aria-label="Toggle spray coverage view"
-              className={"relative w-12 h-6 rounded-full transition-colors flex-none " + (spray ? "bg-sky-600" : "bg-stone-700")}>
-              <span className={"absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all " + (spray ? "left-6" : "left-0.5")} />
-            </button>
-            <div>
-              <div className="text-sm text-stone-200 font-medium">{spray ? "Showing spray coverage" : "Show where the spray lands"}</div>
-              <div className="text-[11px] text-stone-500">{spray
-                ? <>Bare planes were missed by this pass. Spraying: <span style={{ color: sprayColor }}>{stage.name}</span>.</>
-                : "Reframes the figures as paint coverage instead of value."}</div>
-            </div>
-          </div>
-          {spray && (
-            <div className="mt-4">
-              <Slider label="Cone focus (wide / feathered → tight / focused)" value={focus * 100} min={0} max={100}
-                onChange={(v) => setFocus(v / 100)} suffix="%" />
-              <p className="text-[11px] text-amber-300/80 leading-snug mt-2">
-                <b className="text-amber-300">Watch for:</b> a wide cone feathers paint onto angled planes — soft and
-                forgiving, but more overspray. A tight cone hits only what directly faces the nozzle — clean, but slow and
-                easy to leave gaps. Undersides stay bare until you aim from below.
-              </p>
-            </div>
-          )}
-        </Section>
-        )}
-
-        {/* ===== GLOW SOURCE (object-source lighting) ===== */}
-        <Section icon={<Lightbulb size={15} />} title="Glow source (object light)">
-          <p className="text-[11px] text-stone-500 mb-3 leading-snug">
-            A second, colored light — a power weapon, a gem, glowing eyes — at its own bearing around the model. It{" "}
-            <span className="text-stone-300">adds</span> on top of the main light: planes facing the orb pick up its
-            color and brighten; planes facing away are untouched. Aim it independently to see the glow on its own.
-          </p>
-          <div className="flex items-center gap-3 mb-1">
-            <button onClick={() => setOrbOn((v) => !v)} role="switch" aria-checked={orbOn} aria-label="Toggle object-source glow"
-              className={"relative w-12 h-6 rounded-full transition-colors flex-none " + (orbOn ? "bg-sky-600" : "bg-stone-700")}>
-              <span className={"absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all " + (orbOn ? "left-6" : "left-0.5")} />
-            </button>
-            <div className="text-sm text-stone-200 font-medium">{orbOn ? "Glow on" : "Glow off"}</div>
-          </div>
-          {orbOn && (
-            <div className="mt-4 flex flex-col sm:flex-row gap-5 items-start">
-              <div className="flex flex-col items-center">
-                <svg viewBox="0 0 52 52" className="w-[68px] h-[68px]">
-                  <circle cx="26" cy="26" r="22" fill="#1d201a" stroke="#34382c" />
-                  <text x="26" y="9" textAnchor="middle" className="fill-stone-500" style={{ fontSize: 6 }}>FRONT</text>
-                  <text x="26" y="49" textAnchor="middle" className="fill-stone-500" style={{ fontSize: 6 }}>BACK</text>
-                  <circle cx={orbCx} cy={orbCy} r="5" fill={orbColor} stroke="#ffffff66" />
-                </svg>
-                <div className="text-[10px] text-stone-500 mt-1">orb</div>
-              </div>
-              <div className="flex-1 w-full space-y-3">
-                <Slider label="Orb bearing (around figure)" value={orbAz} min={0} max={360} onChange={setOrbAz} suffix="°" />
-                <Slider label="Orb height (below → above)" value={orbEl} min={-20} max={90} onChange={setOrbEl} suffix="°" />
-                <Slider label="Glow strength" value={orbInt * 100} min={0} max={100} onChange={(v) => setOrbInt(v / 100)} suffix="%" />
-                <label className="flex items-center gap-2 text-[11px] text-stone-400">
-                  Glow color
-                  <input type="color" value={orbColor} onChange={(e) => setOrbColor(e.target.value)} aria-label="Glow color"
-                    className="w-8 h-8 rounded cursor-pointer bg-transparent border border-stone-700" />
-                </label>
-                <p className="text-[11px] text-amber-300/80 leading-snug">
-                  <b className="text-amber-300">Watch for:</b> keep it subtle — real OSL is dim and falls off fast. Too
-                  strong and it overpowers your value ramp; the giveaway of a fake glow is lighting planes that can't
-                  actually "see" the orb.
-                </p>
-              </div>
-            </div>
-          )}
-        </Section>
-
         {/* ===== RECIPE BUILDER ===== */}
-        <Section icon={<Palette size={15} />} title="Recipe">
+        <Section icon={<Palette size={15} />} title="Recipe" {...sec("recipe")}>
           <div className="flex flex-wrap items-center gap-4 mb-4">
             <label className="flex items-center gap-2 text-sm text-stone-300">
               Base color
@@ -1714,8 +1674,8 @@ export default function App() {
           </p>
         </Section>
 
-        {/* ===== GLAZE ===== */}
-        <Section icon={<Layers size={15} />} title="Zones (materials)">
+        {/* ===== ZONES ===== */}
+        <Section icon={<Layers size={15} />} title="Zones (materials)" {...sec("zones")}>
           <p className="text-[11px] text-stone-500 mb-3 leading-snug">
             Give cloak, armor, and skin their own color schemes — all shaded by the same light.
             Pick a zone, switch on <b className="text-stone-300">Assign</b>, then click the figure to paint parts into it.
@@ -1790,7 +1750,35 @@ export default function App() {
             {" "}Set the active zone to Main to un-assign.</p>}
         </Section>
 
-        <Section icon={<Palette size={15} />} title="Real paints">
+        {/* ===== LIGHT CONTROLS ===== */}
+        <Section icon={<Sun size={15} />} title="Light direction" {...sec("light")}>
+          <div className="flex flex-col sm:flex-row gap-5 items-start">
+            <div className="flex flex-col items-center">
+              <svg viewBox="0 0 52 52" className="w-[68px] h-[68px]">
+                <circle cx="26" cy="26" r="22" fill="#1d201a" stroke="#34382c" />
+                <text x="26" y="9" textAnchor="middle" className="fill-stone-500" style={{ fontSize: 6 }}>FRONT</text>
+                <text x="26" y="49" textAnchor="middle" className="fill-stone-500" style={{ fontSize: 6 }}>BACK</text>
+                <circle cx={cx} cy={cy} r="4" fill={ramp[ramp.length - 1]} />
+              </svg>
+              <div className="text-[10px] text-stone-500 mt-1">{el > 70 ? "overhead" : el < 15 ? "low" : "angled"}</div>
+            </div>
+            <div className="flex-1 w-full space-y-3">
+              <Slider label="Orbit (around figure)" value={az} min={0} max={360} onChange={setAz} suffix="°" />
+              <Slider label="Height (low → overhead)" value={el} min={-20} max={90} onChange={setEl} suffix="°" />
+              <div className="flex flex-wrap gap-2 pt-1">
+                {[["Zenithal", 20, 86], ["Front", 0, 32], ["Left", 90, 32], ["Right", 270, 32], ["Back", 180, 32]]
+                  .map(([t, a, e]) => (
+                    <button key={t} onClick={() => { setAz(a); setEl(e); }}
+                      className="px-3 py-1.5 rounded-full text-xs border border-stone-700 hover:border-stone-500 text-stone-300">
+                      {t}
+                    </button>
+                  ))}
+              </div>
+            </div>
+          </div>
+        </Section>
+
+        <Section icon={<Palette size={15} />} title="Real paints" {...sec("paints")}>
           <div className="flex gap-1 mb-3 flex-wrap">
             {[["", "All brands"], ["C", "Citadel"], ["V", "Vallejo"], ["A", "Army Painter"]].map(([k, lb]) => (
               <button key={lb} onClick={() => setPaintBrand(k)}
@@ -1833,7 +1821,124 @@ export default function App() {
           </p>
         </Section>
 
-        <Section icon={<Droplets size={15} />} title="Paint behavior">
+        {/* ===== SEQUENCER ===== */}
+        <Section icon={<Layers size={15} />} title="Steps" {...sec("steps")}>
+          <p className="text-[11px] text-stone-500 mb-3">{method === "airbrush"
+            ? "Airbrush passes in order — pressure, thinning, and spray angle per step. Tap one to isolate where it lands (steps without a tier apply to the whole model)."
+            : "Tap a step to isolate its value tier on the figure above (steps without one apply to the whole model)."}</p>
+          <div className="space-y-1.5">
+            {stages.map((s, i) => {
+              const active = s.id === activeStage;
+              return (
+                <div key={s.id}
+                  className={"rounded-lg border transition-colors " + (active ? "border-stone-400 bg-stone-800/40" : "border-stone-700/50")}>
+                  <div className="w-full flex items-center gap-3 px-3 py-2.5">
+                    <button type="button" role="checkbox" aria-checked={!!done[s.id]}
+                      aria-label={"Mark “" + s.name + "” done"}
+                      onClick={() => setDone((d) => ({ ...d, [s.id]: !d[s.id] }))}
+                      className={"w-5 h-5 rounded flex-none flex items-center justify-center border " +
+                        (done[s.id] ? "bg-green-600 border-green-600" : "border-stone-600 hover:border-stone-400")}>
+                      {done[s.id] && <Check size={13} />}
+                    </button>
+                    <button type="button" onClick={() => setActiveStage(s.id)} aria-pressed={active}
+                      className="flex-1 flex items-center gap-3 text-left">
+                      <span className="text-[10px] tabular-nums text-stone-500 w-4">{i + 1}</span>
+                      <span className={"text-sm font-medium " + (done[s.id] ? "line-through text-stone-500" : "text-stone-100")}>{s.name}</span>
+                    </button>
+                  </div>
+                  {active && (
+                    <div className="px-3 pb-3 pl-12 space-y-1.5">
+                      {s.iso == null && s.mode === "paint" && (
+                        <span className="inline-block text-[9px] uppercase tracking-wider text-stone-500 border border-stone-700 rounded px-1.5 py-0.5">whole model — no single tier</span>
+                      )}
+                      <p className="text-xs text-stone-300 leading-snug">{s.note}</p>
+                      <p className="text-[11px] text-amber-300/80 leading-snug"><b className="text-amber-300">Watch for:</b> {s.watch}</p>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </Section>
+
+        {method === "airbrush" && (
+        <Section icon={<Droplets size={15} />} title="Spray cone" {...sec("spray")}>
+          <p className="text-[11px] text-stone-500 mb-3 leading-snug">
+            Your light direction <span className="text-stone-300">is the nozzle</span>. Turn this on to see where paint
+            actually lands — planes angled toward the nozzle get coated, planes facing away stay bare primer. Aim with
+            Orbit / Height above.
+          </p>
+          <div className="flex items-center gap-3 mb-1">
+            <button onClick={() => setSpray((v) => !v)} role="switch" aria-checked={spray} aria-label="Toggle spray coverage view"
+              className={"relative w-12 h-6 rounded-full transition-colors flex-none " + (spray ? "bg-sky-600" : "bg-stone-700")}>
+              <span className={"absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all " + (spray ? "left-6" : "left-0.5")} />
+            </button>
+            <div>
+              <div className="text-sm text-stone-200 font-medium">{spray ? "Showing spray coverage" : "Show where the spray lands"}</div>
+              <div className="text-[11px] text-stone-500">{spray
+                ? <>Bare planes were missed by this pass. Spraying: <span style={{ color: sprayColor }}>{stage.name}</span>.</>
+                : "Reframes the figures as paint coverage instead of value."}</div>
+            </div>
+          </div>
+          {spray && (
+            <div className="mt-4">
+              <Slider label="Cone focus (wide / feathered → tight / focused)" value={focus * 100} min={0} max={100}
+                onChange={(v) => setFocus(v / 100)} suffix="%" />
+              <p className="text-[11px] text-amber-300/80 leading-snug mt-2">
+                <b className="text-amber-300">Watch for:</b> a wide cone feathers paint onto angled planes — soft and
+                forgiving, but more overspray. A tight cone hits only what directly faces the nozzle — clean, but slow and
+                easy to leave gaps. Undersides stay bare until you aim from below.
+              </p>
+            </div>
+          )}
+        </Section>
+        )}
+
+        {/* ===== GLOW SOURCE (object-source lighting) ===== */}
+        <Section icon={<Lightbulb size={15} />} title="Glow source (object light)" {...sec("glow")}>
+          <p className="text-[11px] text-stone-500 mb-3 leading-snug">
+            A second, colored light — a power weapon, a gem, glowing eyes — at its own bearing around the model. It{" "}
+            <span className="text-stone-300">adds</span> on top of the main light: planes facing the orb pick up its
+            color and brighten; planes facing away are untouched. Aim it independently to see the glow on its own.
+          </p>
+          <div className="flex items-center gap-3 mb-1">
+            <button onClick={() => setOrbOn((v) => !v)} role="switch" aria-checked={orbOn} aria-label="Toggle object-source glow"
+              className={"relative w-12 h-6 rounded-full transition-colors flex-none " + (orbOn ? "bg-sky-600" : "bg-stone-700")}>
+              <span className={"absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all " + (orbOn ? "left-6" : "left-0.5")} />
+            </button>
+            <div className="text-sm text-stone-200 font-medium">{orbOn ? "Glow on" : "Glow off"}</div>
+          </div>
+          {orbOn && (
+            <div className="mt-4 flex flex-col sm:flex-row gap-5 items-start">
+              <div className="flex flex-col items-center">
+                <svg viewBox="0 0 52 52" className="w-[68px] h-[68px]">
+                  <circle cx="26" cy="26" r="22" fill="#1d201a" stroke="#34382c" />
+                  <text x="26" y="9" textAnchor="middle" className="fill-stone-500" style={{ fontSize: 6 }}>FRONT</text>
+                  <text x="26" y="49" textAnchor="middle" className="fill-stone-500" style={{ fontSize: 6 }}>BACK</text>
+                  <circle cx={orbCx} cy={orbCy} r="5" fill={orbColor} stroke="#ffffff66" />
+                </svg>
+                <div className="text-[10px] text-stone-500 mt-1">orb</div>
+              </div>
+              <div className="flex-1 w-full space-y-3">
+                <Slider label="Orb bearing (around figure)" value={orbAz} min={0} max={360} onChange={setOrbAz} suffix="°" />
+                <Slider label="Orb height (below → above)" value={orbEl} min={-20} max={90} onChange={setOrbEl} suffix="°" />
+                <Slider label="Glow strength" value={orbInt * 100} min={0} max={100} onChange={(v) => setOrbInt(v / 100)} suffix="%" />
+                <label className="flex items-center gap-2 text-[11px] text-stone-400">
+                  Glow color
+                  <input type="color" value={orbColor} onChange={(e) => setOrbColor(e.target.value)} aria-label="Glow color"
+                    className="w-8 h-8 rounded cursor-pointer bg-transparent border border-stone-700" />
+                </label>
+                <p className="text-[11px] text-amber-300/80 leading-snug">
+                  <b className="text-amber-300">Watch for:</b> keep it subtle — real OSL is dim and falls off fast. Too
+                  strong and it overpowers your value ramp; the giveaway of a fake glow is lighting planes that can't
+                  actually "see" the orb.
+                </p>
+              </div>
+            </div>
+          )}
+        </Section>
+
+        <Section icon={<Droplets size={15} />} title="Paint behavior" {...sec("behavior")}>
           <div className="flex items-center gap-3 mb-1">
             <button onClick={() => setGlazeOn((v) => !v)} role="switch" aria-checked={glazeOn} aria-label="Toggle glaze mode"
               className={"relative w-12 h-6 rounded-full transition-colors flex-none " + (glazeOn ? "bg-sky-600" : "bg-stone-700")}>
@@ -1897,7 +2002,7 @@ export default function App() {
         </Section>
 
         {/* ===== COLOR WHEEL ===== */}
-        <Section icon={<Lightbulb size={15} />} title="Wheel & cohesion">
+        <Section icon={<Lightbulb size={15} />} title="Wheel & cohesion" {...sec("wheel")}>
           <div className="flex flex-col sm:flex-row gap-6 items-start">
             <ColorWheel ramp={ramp} accents={accents} base={base} onPickBase={pickBase}
               previewAccent={previewAccent} onSelectAccent={setPreviewAccent} />
@@ -1967,60 +2072,15 @@ export default function App() {
           </div>
         </Section>
 
-        {/* ===== SEQUENCER ===== */}
-        <Section icon={<Layers size={15} />} title="Steps">
-          <p className="text-[11px] text-stone-500 mb-3">{method === "airbrush"
-            ? "Airbrush passes in order — pressure, thinning, and spray angle per step. Tap one to isolate where it lands (steps without a tier apply to the whole model)."
-            : "Tap a step to isolate its value tier on the figure above (steps without one apply to the whole model)."}</p>
-          <div className="space-y-1.5">
-            {stages.map((s, i) => {
-              const active = s.id === activeStage;
-              return (
-                <div key={s.id}
-                  className={"rounded-lg border transition-colors " + (active ? "border-stone-400 bg-stone-800/40" : "border-stone-700/50")}>
-                  <div className="w-full flex items-center gap-3 px-3 py-2.5">
-                    <button type="button" role="checkbox" aria-checked={!!done[s.id]}
-                      aria-label={"Mark “" + s.name + "” done"}
-                      onClick={() => setDone((d) => ({ ...d, [s.id]: !d[s.id] }))}
-                      className={"w-5 h-5 rounded flex-none flex items-center justify-center border " +
-                        (done[s.id] ? "bg-green-600 border-green-600" : "border-stone-600 hover:border-stone-400")}>
-                      {done[s.id] && <Check size={13} />}
-                    </button>
-                    <button type="button" onClick={() => setActiveStage(s.id)} aria-pressed={active}
-                      className="flex-1 flex items-center gap-3 text-left">
-                      <span className="text-[10px] tabular-nums text-stone-500 w-4">{i + 1}</span>
-                      <span className={"text-sm font-medium " + (done[s.id] ? "line-through text-stone-500" : "text-stone-100")}>{s.name}</span>
-                    </button>
-                  </div>
-                  {active && (
-                    <div className="px-3 pb-3 pl-12 space-y-1.5">
-                      {s.iso == null && s.mode === "paint" && (
-                        <span className="inline-block text-[9px] uppercase tracking-wider text-stone-500 border border-stone-700 rounded px-1.5 py-0.5">whole model — no single tier</span>
-                      )}
-                      <p className="text-xs text-stone-300 leading-snug">{s.note}</p>
-                      <p className="text-[11px] text-amber-300/80 leading-snug"><b className="text-amber-300">Watch for:</b> {s.watch}</p>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </Section>
-
         {/* ===== SAVE / LOAD ===== */}
-        <Section icon={<Save size={15} />} title="Recipes">
+        <Section icon={<Save size={15} />} title="Recipes" {...sec("recipes")}>
           <div className="flex flex-wrap gap-2 items-center mb-3">
             <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Recipe name (e.g. Orc Flesh)"
               className="flex-1 min-w-[180px] bg-stone-900 border border-stone-700 rounded-md px-3 py-2 text-sm text-stone-200 placeholder:text-stone-600" />
             <button onClick={save} className="flex items-center gap-1.5 px-4 py-2 rounded-md text-sm bg-stone-200 text-stone-900 font-medium hover:bg-white">
               <Save size={14} /> Save
             </button>
-            <button onClick={exportPNG} title="Download a reference image to take to the bench"
-              className="flex items-center gap-1.5 px-3 py-2 rounded-md text-sm border border-stone-700 hover:border-stone-500 text-stone-300">
-              <Download size={14} /> Export PNG
-            </button>
           </div>
-          <p role="status" aria-live="polite" className="text-[11px] text-stone-500 mb-2">{status}</p>
           <div className="flex flex-wrap gap-2">
             {recipes.length === 0 && <span className="text-[11px] text-stone-600">No saved recipes yet.</span>}
             {recipes.map((nm) => (
@@ -2043,11 +2103,18 @@ export default function App() {
   );
 }
 
-function Section({ icon, title, children }) {
+function Section({ icon, title, children, open = true, onToggle }) {
   return (
-    <section className="rounded-xl border border-stone-700/60 bg-stone-900/30 p-4 mb-5">
-      <h2 className="flex items-center gap-2 text-xs tracking-[0.22em] uppercase text-stone-400 mb-4">{icon}{title}</h2>
-      {children}
+    <section className="rounded-xl border border-stone-700/60 bg-stone-900/30 p-4 mb-4">
+      <h2 className={"text-xs tracking-[0.22em] uppercase text-stone-400 " + (open ? "mb-4" : "mb-0")}>
+        {onToggle ? (
+          <button onClick={onToggle} aria-expanded={open}
+            className="flex items-center gap-2 w-full text-left uppercase tracking-[0.22em] hover:text-stone-200">
+            <span className="text-stone-500 w-3 flex-none">{open ? "▾" : "▸"}</span>{icon}{title}
+          </button>
+        ) : (<span className="flex items-center gap-2">{icon}{title}</span>)}
+      </h2>
+      {open && children}
     </section>
   );
 }
