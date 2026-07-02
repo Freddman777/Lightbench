@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { Sun, Save, Trash2, RotateCcw, Plus, Check, Lightbulb, Layers, Palette, Droplets, Download, Upload } from "lucide-react";
 import { MALE_VERTS, MALE_FACES } from "./male-mesh.js"; // decimated scan (built by decimate.mjs)
+import { PAINTS, PAINT_BRANDS } from "./paint-data.js"; // opaque hobby paints (auto-generated; MIT source data)
 
 /* ============================== COLOR MATH ============================== */
 function hexToHsl(hex) {
@@ -104,6 +105,32 @@ function valueGreyOf(hex) {
   const v = Math.round(clamp(linearToSrgb(relLuminance(hex)), 0, 255)).toString(16).padStart(2, "0");
   return "#" + v + v + v;
 }
+/* ---- Real-paint matching: hex -> CIELAB -> nearest paint by colour distance (ΔE). ---- */
+function hexToLab(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  const lin = (c) => { c /= 255; return c > 0.04045 ? Math.pow((c + 0.055) / 1.055, 2.4) : c / 12.92; };
+  const r = lin((n >> 16) & 255), g = lin((n >> 8) & 255), b = lin(n & 255);
+  const f = (t) => (t > 0.008856 ? Math.cbrt(t) : t * 7.787 + 16 / 116);
+  const X = f((0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047);
+  const Y = f(0.2126 * r + 0.7152 * g + 0.0722 * b);
+  const Z = f((0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883);
+  return [116 * Y - 16, 500 * (X - Y), 200 * (Y - Z)];
+}
+let PAINT_LABS = null; // Lab for every paint, computed once on first use
+function nearestPaint(hex, brand) { // brand: "C" | "V" | "A" | "" (any)
+  if (!PAINT_LABS) PAINT_LABS = PAINTS.map((p) => hexToLab(p[2]));
+  const t = hexToLab(hex);
+  let best = null, bestD = Infinity;
+  for (let i = 0; i < PAINTS.length; i++) {
+    if (brand && PAINTS[i][0] !== brand) continue;
+    const l = PAINT_LABS[i];
+    const d = (t[0] - l[0]) * (t[0] - l[0]) + (t[1] - l[1]) * (t[1] - l[1]) + (t[2] - l[2]) * (t[2] - l[2]);
+    if (d < bestD) { bestD = d; best = PAINTS[i]; }
+  }
+  return best && { brand: best[0], name: best[1], hex: best[2], dE: Math.sqrt(bestD) };
+}
+const matchQuality = (dE) => (dE < 5 ? "spot on" : dE < 12 ? "close" : "mix to match");
+
 function defaultGlaze(ramp, count) {
   const out = [];
   for (let i = 0; i < count; i++) {
@@ -559,7 +586,7 @@ function centroid(pts) {
   const n = pairs.length || 1;
   return [pairs.reduce((a, p) => a + p[0], 0) / n, pairs.reduce((a, p) => a + p[1], 0) / n];
 }
-const FigureView = React.memo(function FigureView({ label, regions, L, ramp, mode, isoTier, tierKeys, glazeOn, glazeLayers, pooling, valueMode, sprayOn = false, focus = 0.5, sprayColor = "#cfe3ef", orbOn = false, Lorb = null, orbColor = "#3fb8ff", orbInt = 0.5, viewBox = "0 0 200 460", svgExtra = "" }) {
+const FigureView = React.memo(function FigureView({ label, regions, L, ramp, mode, isoTier, tierKeys, glazeOn, glazeLayers, pooling, valueMode, sprayOn = false, focus = 0.5, sprayColor = "#cfe3ef", orbOn = false, Lorb = null, orbColor = "#3fb8ff", orbInt = 0.5, viewBox = "0 0 200 460", svgExtra = "", zoneRamps = null, zoneMap = null, onPickRegion = null }) {
   // The facet facing the light most directly is just the max of b = dot(normal, light);
   // marking it makes the whole shading model legible at a glance.
   const bs = regions.map((r) => brightness(r.n, L, r.ao));
@@ -570,18 +597,22 @@ const FigureView = React.memo(function FigureView({ label, regions, L, ramp, mod
       <svg viewBox={viewBox} preserveAspectRatio="xMidYMid meet" className={"w-full h-auto " + svgExtra}>
         {regions.map((r, i) => {
           const b = bs[i];
-          const idx = tierIndex(b, ramp.length);
+          // each region shades from its zone's ramp (zone 0 = the main ramp)
+          const zr = (zoneRamps && (zoneRamps[(zoneMap && zoneMap[i]) || 0] || zoneRamps[0])) || ramp;
+          const idx = tierIndex(b, zr.length);
           let fill, dim = isoTier != null && tierKeys[idx] !== isoTier;
           if (sprayOn) { fill = mix("#33322d", sprayColor, sprayCoverage(r.n, L, focus)); dim = false; } // coverage, not value
           else if (mode === "prime") fill = "#1b1b1b";
           else if (mode === "zenithal") fill = valueGrey(b);
           else if (glazeOn) fill = glazeColor(b, glazeLayers, pooling);
-          else fill = ramp[idx];
+          else fill = zr[idx];
           if (valueMode && mode === "paint" && !sprayOn) fill = valueGreyOf(fill); // squint test: show value, not hue
           if (orbOn && Lorb && !sprayOn) fill = orbGlow(fill, r.n, Lorb, orbColor, orbInt); // object-source glow adds on top
           return (
             <polygon key={i} points={r.p} fill={fill}
               opacity={dim ? 0.12 : 1}
+              onClick={onPickRegion ? () => onPickRegion(i) : undefined}
+              style={onPickRegion ? { cursor: "crosshair" } : undefined}
               stroke="#00000033" strokeWidth="0.6" strokeLinejoin="round" />
           );
         })}
@@ -700,6 +731,35 @@ function buildMesh(faces) {
 }
 // Expand an indexed mesh (shared verts + face index lists, e.g. from the OBJ decimator).
 function buildMeshIndexed(verts, faceIdx) { return buildMesh(faceIdx.map((f) => f.map((i) => verts[i]))); }
+
+/* ---- Zone patch fill: expand a clicked face across shared edges while the surface
+        stays smooth (normal deviation < ~45°), so one click grabs a whole cloak/armor
+        plate on a dense imported mesh without bleeding around hard edges. ---- */
+function meshAdjacency(mesh) {
+  if (mesh._adj) return mesh._adj;
+  const key = (p) => p[0].toFixed(1) + "," + p[1].toFixed(1) + "," + p[2].toFixed(1);
+  const edgeMap = new Map(), adj = mesh.faces.map(() => []);
+  mesh.faces.forEach((f, i) => {
+    for (let a = 0; a < f.length; a++) {
+      const k1 = key(f[a]), k2 = key(f[(a + 1) % f.length]);
+      const ek = k1 < k2 ? k1 + "|" + k2 : k2 + "|" + k1;
+      const other = edgeMap.get(ek);
+      if (other !== undefined && other !== i) { adj[i].push(other); adj[other].push(i); }
+      else edgeMap.set(ek, i);
+    }
+  });
+  return (mesh._adj = adj);
+}
+function zonePatch(mesh, start, maxFaces = 1500) {
+  const adj = meshAdjacency(mesh), norms = mesh.normals;
+  const out = [start], seen = new Set(out);
+  for (let q = 0; q < out.length && out.length < maxFaces; q++) {
+    for (const j of adj[out[q]]) {
+      if (!seen.has(j) && dot3(norms[out[q]], norms[j]) > 0.72) { seen.add(j); out.push(j); }
+    }
+  }
+  return out;
+}
 
 /* ---- Import your own model (STL/OBJ) — parse, normalize, decimate in-browser. ---- */
 // Binary or ASCII STL -> triangle soup (verts get welded by the decimator's clustering).
@@ -869,20 +929,59 @@ const MESH3D = new Proxy(meshCache, {
 // Canvas renderer — fast enough for the decimated scan (~2-3k faces) where SVG would choke.
 // Same engine: world-space normal -> light -> tier color, flat-shaded; painter's sort + cull;
 // mild perspective; drag to orbit (light fixed in world). noDrag renders a static thumbnail.
-const Model3D = React.memo(function Model3D({ mesh, L, ramp, mode, isoTier, tierKeys, glazeOn, glazeLayers, pooling, valueMode, sprayOn = false, focus = 0.5, sprayColor = "#cfe3ef", orbOn = false, Lorb = null, orbColor = "#3fb8ff", orbInt = 0.5, noDrag, initRot }) {
+const Model3D = React.memo(function Model3D({ mesh, L, ramp, mode, isoTier, tierKeys, glazeOn, glazeLayers, pooling, valueMode, sprayOn = false, focus = 0.5, sprayColor = "#cfe3ef", orbOn = false, Lorb = null, orbColor = "#3fb8ff", orbInt = 0.5, noDrag, initRot, zoneRamps = null, zoneMap = null, onPickFace = null, brushSize = 0, onBrushFaces = null }) {
   const [rot, setRot] = useState(initRot || { yaw: -0.5, pitch: 0.12 });
   const canvasRef = useRef(null);
   const drag = useRef(null);
-  const onDown = (e) => { if (noDrag) return; drag.current = { x: e.clientX, y: e.clientY, ...rot }; e.currentTarget.setPointerCapture?.(e.pointerId); };
+  const drawn = useRef([]); // projected polys from the last render (front-to-back order), for click picking
+  // Brush painting: map a pointer event to canvas coords and hand over every visible
+  // face whose on-screen centroid falls inside the brush circle.
+  const brushAt = (e) => {
+    const cnv = canvasRef.current, r = cnv.getBoundingClientRect();
+    const px = ((e.clientX - r.left) / r.width) * cnv.width, py = ((e.clientY - r.top) / r.height) * cnv.height;
+    const hit = [], R2 = brushSize * brushSize;
+    for (const { i, pts } of drawn.current) {
+      let cx2 = 0, cy2 = 0;
+      for (const p of pts) { cx2 += p[0]; cy2 += p[1]; }
+      cx2 /= pts.length; cy2 /= pts.length;
+      if ((cx2 - px) * (cx2 - px) + (cy2 - py) * (cy2 - py) <= R2) hit.push(i);
+    }
+    if (hit.length) onBrushFaces(hit);
+  };
+  const onDown = (e) => {
+    if (noDrag) return;
+    if (onBrushFaces && brushSize > 0) { drag.current = { painting: true }; e.currentTarget.setPointerCapture?.(e.pointerId); brushAt(e); return; }
+    drag.current = { x: e.clientX, y: e.clientY, moved: false, ...rot }; e.currentTarget.setPointerCapture?.(e.pointerId);
+  };
   const raf = useRef(0), pendingRot = useRef(null);
   const onMove = (e) => {
     if (!drag.current) return;
+    if (drag.current.painting) { brushAt(e); return; }
     const dx = e.clientX - drag.current.x, dy = e.clientY - drag.current.y;
+    if (Math.abs(dx) + Math.abs(dy) > 4) drag.current.moved = true;
     pendingRot.current = { yaw: drag.current.yaw + dx * 0.01, pitch: clamp(drag.current.pitch + dy * 0.01, -1.2, 1.2) };
     // Pointer events can fire faster than the display refreshes; coalesce to one redraw per frame.
     if (!raf.current) raf.current = requestAnimationFrame(() => { raf.current = 0; setRot(pendingRot.current); });
   };
-  const onUp = (e) => { drag.current = null; e.currentTarget.releasePointerCapture?.(e.pointerId); };
+  const onUp = (e) => {
+    const wasPainting = drag.current && drag.current.painting;
+    const wasClick = drag.current && !drag.current.painting && !drag.current.moved;
+    drag.current = null; e.currentTarget.releasePointerCapture?.(e.pointerId);
+    if (wasPainting || !wasClick || !onPickFace) return;
+    // click (not a drag): pick the frontmost face under the cursor
+    const cnv = canvasRef.current, r = cnv.getBoundingClientRect();
+    const px = ((e.clientX - r.left) / r.width) * cnv.width, py = ((e.clientY - r.top) / r.height) * cnv.height;
+    const polys = drawn.current;
+    for (let k = polys.length - 1; k >= 0; k--) { // drawn back-to-front, so scan from the end
+      const { i, pts } = polys[k];
+      let inside = false;
+      for (let a = 0, b = pts.length - 1; a < pts.length; b = a++) {
+        if (((pts[a][1] > py) !== (pts[b][1] > py)) &&
+            px < ((pts[b][0] - pts[a][0]) * (py - pts[a][1])) / (pts[b][1] - pts[a][1]) + pts[a][0]) inside = !inside;
+      }
+      if (inside) { onPickFace(i); return; }
+    }
+  };
   useEffect(() => () => cancelAnimationFrame(raf.current), []);
 
   // Brightness depends on light + mesh only — not rotation — so cache it across drag frames.
@@ -905,30 +1004,36 @@ const Model3D = React.memo(function Model3D({ mesh, L, ramp, mode, isoTier, tier
       const cn = rotAll(normals[i]);
       if (cn[2] <= 0.001) continue; // backface cull before doing any more work
       const cv = mf[i].map(cam);
-      vis.push({ n: normals[i], cv, depth: cv.reduce((a, v) => a + v[2], 0) / cv.length, b: brights[i] });
+      vis.push({ i, n: normals[i], cv, depth: cv.reduce((a, v) => a + v[2], 0) / cv.length, b: brights[i] });
     }
     vis.sort((a, b) => a.depth - b.depth);
+    const picks = onPickFace || onBrushFaces ? [] : null;
     const strokeFaces = mf.length < 300; // facet edges help the low-poly figures, not the dense scan
     let bright = null;
     for (const o of vis) {
-      const idx = tierIndex(o.b, ramp.length);
+      // each face shades from its zone's ramp (zone 0 = the main ramp)
+      const zr = (zoneRamps && (zoneRamps[(zoneMap && zoneMap[o.i]) || 0] || zoneRamps[0])) || ramp;
+      const idx = tierIndex(o.b, zr.length);
       let fill, dim = isoTier != null && tierKeys[idx] !== isoTier;
       if (sprayOn) { fill = mix("#33322d", sprayColor, sprayCoverage(o.n, L, focus)); dim = false; }
       else if (mode === "prime") fill = "#1b1b1b";
       else if (mode === "zenithal") fill = valueGrey(o.b);
       else if (glazeOn) fill = glazeColor(o.b, glazeLayers, pooling);
-      else fill = ramp[idx];
+      else fill = zr[idx];
       if (valueMode && mode === "paint" && !sprayOn) fill = valueGreyOf(fill);
       if (orbOn && Lorb && !sprayOn) fill = orbGlow(fill, o.n, Lorb, orbColor, orbInt);
       ctx.globalAlpha = dim ? 0.12 : 1;
       ctx.beginPath();
-      const p0 = project(o.cv[0]); ctx.moveTo(p0[0], p0[1]);
-      for (let k = 1; k < o.cv.length; k++) { const p = project(o.cv[k]); ctx.lineTo(p[0], p[1]); }
+      const pts = picks ? [] : null;
+      const p0 = project(o.cv[0]); ctx.moveTo(p0[0], p0[1]); if (pts) pts.push(p0);
+      for (let k = 1; k < o.cv.length; k++) { const p = project(o.cv[k]); ctx.lineTo(p[0], p[1]); if (pts) pts.push(p); }
       ctx.closePath();
       ctx.fillStyle = fill; ctx.fill();
+      if (pts) picks.push({ i: o.i, pts });
       if (strokeFaces) { ctx.lineWidth = 0.6; ctx.strokeStyle = "#00000033"; ctx.stroke(); }
       if (!dim && (!bright || o.b > bright.b)) bright = o;
     }
+    if (picks) drawn.current = picks;
     ctx.globalAlpha = 1;
     if (mode !== "prime" && bright) {
       const [X, Y] = project(centroid3(bright.cv));
@@ -937,12 +1042,12 @@ const Model3D = React.memo(function Model3D({ mesh, L, ramp, mode, isoTier, tier
       ctx.fillStyle = g; ctx.beginPath(); ctx.arc(X, Y, 18, 0, Math.PI * 2); ctx.fill();
       ctx.fillStyle = "#fff6da"; ctx.beginPath(); ctx.arc(X, Y, 3, 0, Math.PI * 2); ctx.fill();
     }
-  }, [mesh, brights, L, ramp, mode, isoTier, tierKeys, glazeOn, glazeLayers, pooling, valueMode, sprayOn, focus, sprayColor, orbOn, Lorb, orbColor, orbInt, rot]);
+  }, [mesh, brights, L, ramp, mode, isoTier, tierKeys, glazeOn, glazeLayers, pooling, valueMode, sprayOn, focus, sprayColor, orbOn, Lorb, orbColor, orbInt, rot, zoneRamps, zoneMap, onPickFace]);
 
   return (
     <div className="flex flex-col items-center">
       <canvas ref={canvasRef} width={460} height={600}
-        className={"w-full h-auto select-none touch-none " + (noDrag ? "" : "cursor-grab active:cursor-grabbing")}
+        className={"w-full h-auto select-none touch-none " + (onPickFace || onBrushFaces ? "cursor-crosshair" : noDrag ? "" : "cursor-grab active:cursor-grabbing")}
         onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerLeave={onUp} />
       {!noDrag && <div className="mt-1 text-[10px] tracking-[0.25em] uppercase text-stone-400">3D · drag to rotate</div>}
     </div>
@@ -1058,6 +1163,15 @@ export default function App() {
   const [customReady, setCustomReady] = useState(false); // an imported STL/OBJ mesh is loaded
   const [importMsg, setImportMsg] = useState("");
   const [detail, setDetail] = useState(3400); // face budget for imported models
+  const [paintBrand, setPaintBrand] = useState(""); // real-paint match filter; "" = any brand
+  // Zones: zone 0 is the main base/ramp; up to 3 extra zones each carry their own scheme.
+  const [extraZones, setExtraZones] = useState([]); // [{ name, base, ramp }]
+  const [activeZone, setActiveZone] = useState(0);
+  const [zonePaint, setZonePaint] = useState(false); // when on, clicking the figure assigns the active zone
+  const [zoneMode, setZoneMode] = useState("patch"); // 3D assign style: "patch" auto-fill | "brush" drag-paint
+  const [brushSize, setBrushSize] = useState(22);    // brush radius in canvas px
+  const [zoneMap2d, setZoneMap2d] = useState({});    // { model: { viewKey: { regionIdx: zone } } }
+  const [zoneMap3d, setZoneMap3d] = useState({});    // { model: { faceIdx: zone } }
   const [pooling, setPooling] = useState(0.6);
   const [glazeLayers, setGlazeLayers] = useState(() => defaultGlaze(generateRamp("#5f8a4a", 5), 3));
 
@@ -1073,6 +1187,55 @@ export default function App() {
     if (k) { const i = tierKeys.indexOf(k); if (i >= 0) return ramp[i]; }
     return ramp[ramp.length - 1];
   }, [stage, tierKeys, ramp]); // the active step's tier color is what the spray "lays down"
+  const zoneRamps = useMemo(() => [ramp, ...extraZones.map((z) => z.ramp)], [ramp, extraZones]);
+  const zoneNames = useMemo(() => ["Main", ...extraZones.map((z) => z.name)], [extraZones]);
+  const zoneMatches = useMemo(() => zoneRamps.map((zr) => zr.map((c) => nearestPaint(c, paintBrand))), [zoneRamps, paintBrand]);
+  const accentMatches = useMemo(() => accents.map((c) => nearestPaint(c, paintBrand)), [accents, paintBrand]);
+  // Zone assignment handlers — clicking the figure paints the active zone onto it.
+  const pickRegion = useCallback((viewKey) => (i) => {
+    setZoneMap2d((m) => {
+      const mm = { ...(m[model] || {}) }, vv = { ...(mm[viewKey] || {}) };
+      if (activeZone === 0) delete vv[i]; else vv[i] = activeZone;
+      mm[viewKey] = vv;
+      return { ...m, [model]: mm };
+    });
+  }, [model, activeZone]);
+  const pickFace = useCallback((i) => {
+    const mesh = MESH3D[model]; if (!mesh) return;
+    const faces = zonePatch(mesh, i); // patch mode: a click grabs the smooth connected patch
+    setZoneMap3d((m) => {
+      const mm = { ...(m[model] || {}) };
+      for (const f of faces) { if (activeZone === 0) delete mm[f]; else mm[f] = activeZone; }
+      return { ...m, [model]: mm };
+    });
+  }, [model, activeZone]);
+  const brushFaces = useCallback((idxs) => { // brush mode: paint exactly what the cursor touches
+    setZoneMap3d((m) => {
+      const mm = { ...(m[model] || {}) };
+      for (const f of idxs) { if (activeZone === 0) delete mm[f]; else mm[f] = activeZone; }
+      return { ...m, [model]: mm };
+    });
+  }, [model, activeZone]);
+  const clearZones = () => { setZoneMap2d((m) => ({ ...m, [model]: {} })); setZoneMap3d((m) => ({ ...m, [model]: {} })); };
+  const addZone = () => {
+    if (extraZones.length >= 3) return;
+    const presets = [["Cloak", "#7a3b3b"], ["Armor", "#4a5a6a"], ["Skin", "#c98a6a"]];
+    const [nm, hx] = presets[extraZones.length];
+    setExtraZones((zs) => [...zs, { name: nm, base: hx, ramp: generateRamp(hx, numSteps) }]);
+    setActiveZone(extraZones.length + 1); setZonePaint(true);
+  };
+  const removeZone = () => { // removes the last zone and unassigns it everywhere
+    const z = extraZones.length; if (!z) return;
+    const stripFlat = (v) => Object.fromEntries(Object.entries(v).filter(([, zz]) => zz !== z));
+    setZoneMap3d((m) => Object.fromEntries(Object.entries(m).map(([k, v]) => [k, stripFlat(v)])));
+    setZoneMap2d((m) => Object.fromEntries(Object.entries(m).map(([k, views]) => [k,
+      Object.fromEntries(Object.entries(views).map(([vk, v]) => [vk, stripFlat(v)]))])));
+    setExtraZones((zs) => zs.slice(0, -1));
+    setActiveZone((a) => (a >= z ? 0 : a));
+  };
+  const setZoneBase = (zi, hex) => { // zi >= 1
+    setExtraZones((zs) => zs.map((zz, k) => (k === zi - 1 ? { ...zz, base: hex, ramp: generateRamp(hex, numSteps) } : zz)));
+  };
   const only3d = !!(model && MODELS[model].only3d); // 3D-only model (no orthographic sheet)
   const views = (model && MODELS[model].views) || MODELS.standing.views; // fallback so sheet/preview code never sees undefined
   const previewRegions = frontOf(views);
@@ -1099,7 +1262,10 @@ export default function App() {
   // Setting a new base hue or step count rebuilds the ramp. Loading a recipe does NOT —
   // load() restores the saved ramp (including hand-matched swatches), and nothing here overwrites it.
   const pickBase = (hex) => { setBase(hex); setRamp(generateRamp(hex, numSteps)); };
-  const pickSteps = (n) => { setNumSteps(n); setRamp(generateRamp(base, n)); };
+  const pickSteps = (n) => {
+    setNumSteps(n); setRamp(generateRamp(base, n));
+    setExtraZones((zs) => zs.map((z) => ({ ...z, ramp: generateRamp(z.base, n) }))); // keep every zone at the same step count
+  };
   // Changing the glaze layer count keeps the tuned layers — trim on shrink, append
   // only the new slots on grow. "Colors from recipe" stays the explicit full reset.
   const resizeGlaze = (n) => setGlazeLayers((ls) =>
@@ -1107,7 +1273,7 @@ export default function App() {
 
   const save = async () => {
     const nm = name.trim(); if (!nm) { setStatus("Name it first."); return; }
-    const recipe = { base, numSteps, ramp, accents, az, el, done, glazeOn, pooling, glazeLayers, method, spray, focus, orbOn, orbAz, orbEl, orbColor, orbInt };
+    const recipe = { base, numSteps, ramp, accents, az, el, done, glazeOn, pooling, glazeLayers, method, spray, focus, orbOn, orbAz, orbEl, orbColor, orbInt, extraZones };
     if (!window.storage) { setStatus("Storage unavailable in preview."); return; }
     try { await window.storage.set("recipe:" + nm, JSON.stringify(recipe)); setStatus("Saved “" + nm + "”."); refreshList(); }
     catch { setStatus("Save failed."); }
@@ -1133,6 +1299,14 @@ export default function App() {
     setSpray(!!r.spray); setFocus(num(r.focus, 0.5, 0, 1));
     setOrbOn(!!r.orbOn); setOrbAz(num(r.orbAz, 200, 0, 360)); setOrbEl(num(r.orbEl, 0, -20, 90));
     setOrbColor(validHex(r.orbColor) ? r.orbColor : "#3fb8ff"); setOrbInt(num(r.orbInt, 0.5, 0, 1));
+    setExtraZones(Array.isArray(r.extraZones)
+      ? r.extraZones.slice(0, 3).filter((z) => z && validHex(z.base)).map((z, k) => ({
+          name: typeof z.name === "string" && z.name.trim() ? z.name.slice(0, 24) : "Zone " + (k + 2),
+          base: z.base,
+          ramp: Array.isArray(z.ramp) && z.ramp.length === steps && z.ramp.every(validHex) ? z.ramp : generateRamp(z.base, steps),
+        }))
+      : []);
+    setActiveZone(0);
   }, []);
   const load = async (nm) => {
     if (!window.storage) return;
@@ -1164,6 +1338,9 @@ export default function App() {
             applyRecipe(r);
             // Colors/light/steps are restored, but the app always opens on the model chooser.
             if (typeof r.activeStage === "string") setActiveStage(r.activeStage);
+            if (typeof r.paintBrand === "string") setPaintBrand(r.paintBrand);
+            if (r.zoneMap2d && typeof r.zoneMap2d === "object") setZoneMap2d(r.zoneMap2d);
+            if (r.zoneMap3d && typeof r.zoneMap3d === "object") setZoneMap3d(r.zoneMap3d);
           }
         } catch {}
       }
@@ -1177,16 +1354,19 @@ export default function App() {
     // Debounced: sliders fire this every tick; one write after the user pauses is enough.
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
-      try { window.storage.set("session:last", JSON.stringify({ model, activeStage, base, numSteps, ramp, accents, az, el, done, glazeOn, pooling, glazeLayers, method, spray, focus, orbOn, orbAz, orbEl, orbColor, orbInt })); } catch {}
+      try { window.storage.set("session:last", JSON.stringify({ model, activeStage, base, numSteps, ramp, accents, az, el, done, glazeOn, pooling, glazeLayers, method, spray, focus, orbOn, orbAz, orbEl, orbColor, orbInt, paintBrand, extraZones, zoneMap2d, zoneMap3d })); } catch {}
     }, 300);
     return () => clearTimeout(saveTimer.current);
-  }, [model, activeStage, base, numSteps, ramp, accents, az, el, done, glazeOn, pooling, glazeLayers, method, spray, focus, orbOn, orbAz, orbEl, orbColor, orbInt]);
+  }, [model, activeStage, base, numSteps, ramp, accents, az, el, done, glazeOn, pooling, glazeLayers, method, spray, focus, orbOn, orbAz, orbEl, orbColor, orbInt, paintBrand, extraZones, zoneMap2d, zoneMap3d]);
 
   // Export a painting-reference PNG: the figure as shown + value ramp, accents, light & glaze.
   const exportPNG = () => {
     const pad = 28, W = 740, figW = 300, figH = 380, top = 92;
     const cv = document.createElement("canvas");
-    cv.width = W; cv.height = top + figH + 40;
+    // right column: ramp grid + per-zone paint lists + accents + light/glaze lines — size to whichever is taller
+    const paintsH = zoneMatches.reduce((s, m) => s + (zoneMatches.length > 1 ? 15 : 0) + m.length * 16, 27);
+    const rightH = 22 + Math.ceil(tiers.length / 4) * 72 + 14 + paintsH + (accents.length ? 54 : 0) + 60;
+    cv.height = top + Math.max(figH, rightH) + 40;
     const ctx = cv.getContext("2d");
     ctx.fillStyle = "#141611"; ctx.fillRect(0, 0, W, cv.height);
     ctx.fillStyle = "#e7e5e4"; ctx.font = "bold 24px Segoe UI, system-ui, sans-serif";
@@ -1201,8 +1381,10 @@ export default function App() {
       ctx.drawImage(live, fx + (figW - dw) / 2, fy, dw, dh);
     } else {
       const s = Math.min(figW / 200, figH / 460), ox = fx + (figW - 200 * s) / 2;
-      for (const r of previewRegions) {
-        const fill = ramp[tierIndex(brightness(r.n, L, r.ao), ramp.length)];
+      const zmFront = zoneMap2d[model]?.front || {};
+      for (const [ri, r] of previewRegions.entries()) {
+        const zr = zoneRamps[zmFront[ri] || 0] || ramp;
+        const fill = zr[tierIndex(brightness(r.n, L, r.ao), zr.length)];
         ctx.beginPath();
         r.p.trim().split(/\s+/).forEach((pt, i) => { const [x, y] = pt.split(",").map(Number); const X = ox + x * s, Y = fy + y * s; i ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y); });
         ctx.closePath(); ctx.fillStyle = fill; ctx.fill(); ctx.lineWidth = 0.5; ctx.strokeStyle = "#00000033"; ctx.stroke();
@@ -1219,6 +1401,23 @@ export default function App() {
       ctx.fillStyle = "#78716c"; ctx.fillText(ramp[i], x, y + sw + 25);
     });
     ry += Math.ceil(tiers.length / 4) * (sw + 30) + 14;
+    ctx.fillStyle = "#a8a29e"; ctx.font = "11px Segoe UI, system-ui, sans-serif";
+    ctx.fillText("PAINTS — " + (paintBrand ? PAINT_BRANDS[paintBrand] : "closest of any brand"), rx, ry); ry += 16;
+    zoneMatches.forEach((matches, zi) => {
+      if (zoneMatches.length > 1) {
+        ctx.fillStyle = "#a8a29e"; ctx.font = "bold 10px Segoe UI, system-ui, sans-serif";
+        ctx.fillText(zoneNames[zi].toUpperCase(), rx, ry); ry += 15;
+      }
+      tiers.forEach((t, i) => {
+        const m = matches[i]; if (!m) return;
+        ctx.fillStyle = zoneRamps[zi][i]; ctx.fillRect(rx, ry - 9, 11, 11);
+        ctx.strokeStyle = "#00000044"; ctx.strokeRect(rx, ry - 9, 11, 11);
+        ctx.fillStyle = "#d6d3d1"; ctx.font = "11px Segoe UI, system-ui, sans-serif";
+        ctx.fillText(t.label + " — " + m.name + " (" + PAINT_BRANDS[m.brand] + ")", rx + 17, ry);
+        ry += 16;
+      });
+    });
+    ry += 11;
     if (accents.length) {
       ctx.fillStyle = "#a8a29e"; ctx.font = "11px Segoe UI, system-ui, sans-serif"; ctx.fillText("ACCENTS", rx, ry); ry += 14;
       accents.slice(0, 8).forEach((c, i) => { ctx.fillStyle = c; ctx.fillRect(rx + i * 26, ry, 22, 22); ctx.strokeStyle = "#facc1577"; ctx.strokeRect(rx + i * 26, ry, 22, 22); });
@@ -1247,6 +1446,7 @@ export default function App() {
       const dec = importMeshFromFile(file.name, await file.arrayBuffer(), target);
       dec.target = target; // remembered so the detail picker restores with the mesh
       meshCache.custom = buildMeshIndexed(dec.verts, dec.faces);
+      setZoneMap3d((m) => ({ ...m, custom: {} })); // face indices don't survive a new mesh
       setCustomReady(true); setImportMsg("");
       try { await window.storage?.set("custommesh:last", JSON.stringify(dec)); } catch {}
       setModel("custom");
@@ -1301,7 +1501,11 @@ export default function App() {
                 <Model3D mesh={MESH3D[model]} L={L} ramp={ramp} mode={stage.mode} isoTier={stage.iso}
                   tierKeys={tierKeys} glazeOn={glazeOn} glazeLayers={glazeLayers} pooling={pooling} valueMode={valueMode}
                   sprayOn={sprayActive} focus={focus} sprayColor={sprayColor}
-                  orbOn={orbOn} Lorb={Lorb} orbColor={orbColor} orbInt={orbInt} />
+                  orbOn={orbOn} Lorb={Lorb} orbColor={orbColor} orbInt={orbInt}
+                  zoneRamps={zoneRamps} zoneMap={zoneMap3d[model]}
+                  onPickFace={zonePaint && zoneMode === "patch" ? pickFace : null}
+                  brushSize={zonePaint && zoneMode === "brush" ? brushSize : 0}
+                  onBrushFaces={zonePaint && zoneMode === "brush" ? brushFaces : null} />
               ) : (
                 <>
                   <div className="grid grid-cols-2 gap-2">
@@ -1311,6 +1515,8 @@ export default function App() {
                         glazeOn={glazeOn} glazeLayers={glazeLayers} pooling={pooling} valueMode={valueMode}
                         sprayOn={sprayActive} focus={focus} sprayColor={sprayColor}
                         orbOn={orbOn} Lorb={Lorb} orbColor={orbColor} orbInt={orbInt}
+                        zoneRamps={zoneRamps} zoneMap={zoneMap2d[model]?.[v.key]}
+                        onPickRegion={zonePaint ? pickRegion(v.key) : null}
                         svgExtra="lg:max-h-[27vh]" />
                     ))}
                   </div>
@@ -1323,6 +1529,8 @@ export default function App() {
                           glazeOn={glazeOn} glazeLayers={glazeLayers} pooling={pooling} valueMode={valueMode}
                           sprayOn={sprayActive} focus={focus} sprayColor={sprayColor}
                           orbOn={orbOn} Lorb={Lorb} orbColor={orbColor} orbInt={orbInt}
+                          zoneRamps={zoneRamps} zoneMap={zoneMap2d[model]?.top}
+                          onPickRegion={zonePaint ? pickRegion("top") : null}
                           svgExtra="lg:max-h-[15vh]" />
                       </div>
                     </div>
@@ -1507,6 +1715,124 @@ export default function App() {
         </Section>
 
         {/* ===== GLAZE ===== */}
+        <Section icon={<Layers size={15} />} title="Zones (materials)">
+          <p className="text-[11px] text-stone-500 mb-3 leading-snug">
+            Give cloak, armor, and skin their own color schemes — all shaded by the same light.
+            Pick a zone, switch on <b className="text-stone-300">Assign</b>, then click the figure to paint parts into it.
+          </p>
+          <div className="space-y-1.5 mb-3">
+            {zoneNames.map((nm, zi) => (
+              <div key={zi} className={"flex items-center gap-2 rounded-lg border px-2 py-1.5 " +
+                (activeZone === zi ? "border-stone-400 bg-stone-800/40" : "border-stone-700/50")}>
+                <button onClick={() => setActiveZone(zi)} aria-pressed={activeZone === zi}
+                  className={"w-3.5 h-3.5 rounded-full flex-none border " + (activeZone === zi ? "bg-lime-500 border-lime-500" : "border-stone-600")}
+                  title={"Make “" + nm + "” the active zone"} />
+                <input type="color" value={zi === 0 ? base : extraZones[zi - 1].base}
+                  onChange={(e) => (zi === 0 ? pickBase(e.target.value) : setZoneBase(zi, e.target.value))}
+                  className="w-7 h-7 flex-none bg-transparent border-0 cursor-pointer" title="Zone base color" />
+                {zi === 0
+                  ? <span className="text-xs text-stone-200 flex-1">Main</span>
+                  : <input value={extraZones[zi - 1].name}
+                      onChange={(e) => setExtraZones((zs) => zs.map((z, k) => (k === zi - 1 ? { ...z, name: e.target.value } : z)))}
+                      className="flex-1 min-w-0 bg-transparent border-b border-stone-700 text-xs text-stone-200 px-1 py-0.5" />}
+                <div className="flex gap-0.5 flex-none">
+                  {zoneRamps[zi].map((c, k) => <div key={k} className="w-2.5 h-5" style={{ background: c }} />)}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {extraZones.length < 3 && (
+              <button onClick={addZone} className="flex items-center gap-1 px-3 py-1.5 rounded-md text-xs border border-stone-700 hover:border-stone-500 text-stone-300">
+                <Plus size={12} /> Add zone
+              </button>
+            )}
+            {extraZones.length > 0 && (
+              <button onClick={removeZone} className="px-3 py-1.5 rounded-md text-xs border border-stone-700 hover:border-red-500/60 text-stone-400">
+                Remove last
+              </button>
+            )}
+            <button onClick={() => setZonePaint(!zonePaint)} aria-pressed={zonePaint}
+              className={"px-3 py-1.5 rounded-md text-xs border transition-colors " +
+                (zonePaint ? "border-lime-500 text-lime-300 bg-lime-500/10" : "border-stone-700 text-stone-300 hover:border-stone-500")}>
+              Assign: {zonePaint ? "on — click the figure" : "off"}
+            </button>
+            {zonePaint && only3d && (
+              <div className="flex items-center rounded-md border border-stone-700 overflow-hidden text-xs">
+                <button onClick={() => setZoneMode("patch")} aria-pressed={zoneMode === "patch"}
+                  title="A click grabs the whole smooth patch around the face you hit — fast for big areas"
+                  className={"px-3 py-1.5 " + (zoneMode === "patch" ? "bg-stone-700 text-stone-100" : "text-stone-400 hover:text-stone-200")}>
+                  Auto fill
+                </button>
+                <button onClick={() => setZoneMode("brush")} aria-pressed={zoneMode === "brush"}
+                  title="Drag to paint exactly the faces under the brush — for edges auto fill can't see, like hair against skin"
+                  className={"px-3 py-1.5 " + (zoneMode === "brush" ? "bg-stone-700 text-stone-100" : "text-stone-400 hover:text-stone-200")}>
+                  Brush
+                </button>
+              </div>
+            )}
+            <button onClick={clearZones} className="px-3 py-1.5 rounded-md text-xs border border-stone-700 hover:border-stone-500 text-stone-400">
+              Clear this model
+            </button>
+          </div>
+          {zonePaint && only3d && zoneMode === "brush" && (
+            <div className="mt-2 max-w-[220px]">
+              <Slider label="Brush size" value={brushSize} min={8} max={60} onChange={setBrushSize} suffix="px" />
+            </div>
+          )}
+          {zonePaint && <p className="text-[11px] text-amber-300/80 mt-2">
+            Assigning to <b>{zoneNames[activeZone]}</b>
+            {only3d
+              ? (zoneMode === "brush"
+                  ? " — drag paints under the brush (orbiting is paused; turn Assign off to rotate)."
+                  : " — drag still orbits; a click (no drag) auto-fills the smooth patch.")
+              : " — click any facet in any view."}
+            {" "}Set the active zone to Main to un-assign.</p>}
+        </Section>
+
+        <Section icon={<Palette size={15} />} title="Real paints">
+          <div className="flex gap-1 mb-3 flex-wrap">
+            {[["", "All brands"], ["C", "Citadel"], ["V", "Vallejo"], ["A", "Army Painter"]].map(([k, lb]) => (
+              <button key={lb} onClick={() => setPaintBrand(k)}
+                className={"px-2.5 py-1 rounded-full text-[11px] border transition-colors " +
+                  (paintBrand === k ? "border-stone-300 text-stone-100 bg-stone-700/60" : "border-stone-700 text-stone-400 hover:text-stone-200")}>
+                {lb}
+              </button>
+            ))}
+          </div>
+          <div className="space-y-1.5">
+            {zoneMatches.map((matches, zi) => (
+              <React.Fragment key={zi}>
+                {zoneMatches.length > 1 && <div className="text-[10px] uppercase tracking-wider text-stone-500 pt-1">{zoneNames[zi]}</div>}
+                {tiers.map((t, i) => { const m = matches[i]; return m && (
+                  <div key={t.key} className="flex items-center gap-2">
+                    <div className="w-5 h-5 rounded flex-none border border-black/30" style={{ background: zoneRamps[zi][i] }} title={"Your " + t.label + " — " + zoneRamps[zi][i]} />
+                    <span className="text-[10px] text-stone-500 w-16 flex-none">{t.label}</span>
+                    <div className="w-5 h-5 rounded flex-none border border-black/30" style={{ background: m.hex }} title={m.hex} />
+                    <div className="min-w-0 flex-1">
+                      <span className="text-xs text-stone-200">{m.name}</span>
+                      <span className="text-[10px] text-stone-500"> · {PAINT_BRANDS[m.brand]} · {matchQuality(m.dE)}</span>
+                    </div>
+                  </div> ); })}
+              </React.Fragment>
+            ))}
+            {accents.map((c, i) => { const m = accentMatches[i]; return m && (
+              <div key={"a" + i} className="flex items-center gap-2">
+                <div className="w-5 h-5 rounded flex-none border border-yellow-500/40" style={{ background: c }} title={"Accent — " + c} />
+                <span className="text-[10px] text-stone-500 w-16 flex-none">Accent</span>
+                <div className="w-5 h-5 rounded flex-none border border-black/30" style={{ background: m.hex }} title={m.hex} />
+                <div className="min-w-0 flex-1">
+                  <span className="text-xs text-stone-200">{m.name}</span>
+                  <span className="text-[10px] text-stone-500"> · {PAINT_BRANDS[m.brand]} · {matchQuality(m.dE)}</span>
+                </div>
+              </div> ); })}
+          </div>
+          <p className="text-[11px] text-stone-600 mt-3 leading-snug">
+            Nearest opaque pot to each mixed color — a shopping list, not gospel. “Mix to match” means start
+            from that pot and adjust; pot colors also vary by batch and screen.
+          </p>
+        </Section>
+
         <Section icon={<Droplets size={15} />} title="Paint behavior">
           <div className="flex items-center gap-3 mb-1">
             <button onClick={() => setGlazeOn((v) => !v)} role="switch" aria-checked={glazeOn} aria-label="Toggle glaze mode"
