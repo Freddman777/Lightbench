@@ -105,6 +105,25 @@ function valueGreyOf(hex) {
   const v = Math.round(clamp(linearToSrgb(relLuminance(hex)), 0, 255)).toString(16).padStart(2, "0");
   return "#" + v + v + v;
 }
+/* ---- NMM (non-metallic metal): matte paint imitating metal. Metals compress the
+        midtones, spike a near-white specular ping, and reflect their environment —
+        sky tone on planes that face up, ground tone on planes that face down. ---- */
+const NMM_PALETTES = {
+  steel: { lo: "#14171d", mid: "#4a5666", hi: "#a8b8cc", spark: "#f4f8ff", sky: "#c2d8ea", earth: "#2e2b26" },
+  gold:  { lo: "#2a1a0a", mid: "#8a5a1a", hi: "#e8b84a", spark: "#fff6d8", sky: "#ffedb0", earth: "#4a2e12" },
+};
+function nmmColor(kind, b, n) {
+  const P = NMM_PALETTES[kind] || NMM_PALETTES.steel;
+  const t = smoothstep(0.2, 0.9, b); // steeper curve than matte paint = metallic contrast
+  let c = t < 0.5 ? mix(P.lo, P.mid, t * 2) : mix(P.mid, P.hi, (t - 0.5) * 2);
+  if (b > 0.88) c = mix(c, P.spark, smoothstep(0.88, 0.98, b)); // specular ping
+  if (n[1] > 0) c = mix(c, P.sky, n[1] * 0.35);       // up-facing planes catch the sky
+  else c = mix(c, P.earth, -n[1] * 0.45);             // down-facing planes reflect the ground
+  return c;
+}
+// A representative swatch ramp for the UI / paint matching (neutral forward normal).
+const nmmRamp = (kind, n) => Array.from({ length: n }, (_, i) => nmmColor(kind, 0.05 + (n === 1 ? 0.45 : (i / (n - 1)) * 0.9), [0, 0, 1]));
+
 /* ---- Real-paint matching: hex -> CIELAB -> nearest paint by colour distance (ΔE). ---- */
 function hexToLab(hex) {
   const n = parseInt(hex.slice(1), 16);
@@ -464,11 +483,9 @@ const DUAL = [
 ];
 
 const MODELS = {
-  bust: { label: "Bust", blurb: "Head & shoulders — what you're most likely painting.", views: BUST },
-  standing: { label: "Standing figure", blurb: "Full body — broad planes, full-length light.", views: STANDING },
-  gun: { label: "Rifle stance", blurb: "Arms raised, rifle held at an angle — asymmetry, foreshortening, and angled planes.", views: GUN },
-  dual: { label: "Dual wield", blurb: "Arms thrown out — pistol raised high, blade out. Extended limbs and two held items at different angles.", views: DUAL },
-  male: { label: "3D view", blurb: "A realistic figure you rotate in 3D — drag to read light across real anatomy.", only3d: true },
+  // The 2D croquis models were retired once full-detail STL rendering landed —
+  // their view data (STANDING etc.) stays as the generic preview geometry.
+  male: { label: "3D figure", blurb: "A realistic figure you rotate in 3D — drag to read light across real anatomy.", only3d: true },
   custom: { label: "Imported model", blurb: "Your own STL or OBJ, simplified so the planes read clearly.", only3d: true, custom: true },
 };
 const frontOf = (views) => views.find((v) => v.key === "front").regions;
@@ -586,7 +603,7 @@ function centroid(pts) {
   const n = pairs.length || 1;
   return [pairs.reduce((a, p) => a + p[0], 0) / n, pairs.reduce((a, p) => a + p[1], 0) / n];
 }
-const FigureView = React.memo(function FigureView({ label, regions, L, ramp, mode, isoTier, tierKeys, glazeOn, glazeLayers, pooling, valueMode, sprayOn = false, focus = 0.5, sprayColor = "#cfe3ef", orbOn = false, Lorb = null, orbColor = "#3fb8ff", orbInt = 0.5, viewBox = "0 0 200 460", svgExtra = "", zoneRamps = null, zoneMap = null, onPickRegion = null }) {
+const FigureView = React.memo(function FigureView({ label, regions, L, ramp, mode, isoTier, tierKeys, glazeOn, glazeLayers, pooling, valueMode, sprayOn = false, focus = 0.5, sprayColor = "#cfe3ef", orbOn = false, Lorb = null, orbColor = "#3fb8ff", orbInt = 0.5, viewBox = "0 0 200 460", svgExtra = "", zoneRamps = null, zoneMap = null, zoneMetals = null, onPickRegion = null }) {
   // The facet facing the light most directly is just the max of b = dot(normal, light);
   // marking it makes the whole shading model legible at a glance.
   const bs = regions.map((r) => brightness(r.n, L, r.ao));
@@ -598,13 +615,16 @@ const FigureView = React.memo(function FigureView({ label, regions, L, ramp, mod
         {regions.map((r, i) => {
           const b = bs[i];
           // each region shades from its zone's ramp (zone 0 = the main ramp)
-          const zr = (zoneRamps && (zoneRamps[(zoneMap && zoneMap[i]) || 0] || zoneRamps[0])) || ramp;
+          const zi = (zoneMap && zoneMap[i]) || 0;
+          const zr = (zoneRamps && (zoneRamps[zi] || zoneRamps[0])) || ramp;
+          const met = zoneMetals && zoneMetals[zi];
           const idx = tierIndex(b, zr.length);
           let fill, dim = isoTier != null && tierKeys[idx] !== isoTier;
           if (sprayOn) { fill = mix("#33322d", sprayColor, sprayCoverage(r.n, L, focus)); dim = false; } // coverage, not value
           else if (mode === "prime") fill = "#1b1b1b";
           else if (mode === "zenithal") fill = valueGrey(b);
           else if (glazeOn) fill = glazeColor(b, glazeLayers, pooling);
+          else if (met) fill = nmmColor(met, b, r.n); // NMM zone: metal shading, not the tier ramp
           else fill = zr[idx];
           if (valueMode && mode === "paint" && !sprayOn) fill = valueGreyOf(fill); // squint test: show value, not hue
           if (orbOn && Lorb && !sprayOn) fill = orbGlow(fill, r.n, Lorb, orbColor, orbInt); // object-source glow adds on top
@@ -860,6 +880,132 @@ function importMeshFromFile(name, buf, target = 3400) {
   return decimateMesh(normalizeVerts(parsed.verts), parsed.faces, target);
 }
 
+/* ---- Full-detail path: the actual STL as typed triangle soup for the GPU. ---- */
+const FULL_DETAIL = 500000; // triangle cap — beyond this, cluster down (invisible at this size anyway)
+function parseToTypedPos(name, buf) {
+  const bytes = new Uint8Array(buf);
+  if (!/\.obj$/i.test(name) && bytes.length >= 84) {
+    const dv = new DataView(buf);
+    const n = dv.getUint32(80, true);
+    if (84 + n * 50 === bytes.length) { // binary STL straight into a Float32Array
+      const pos = new Float32Array(n * 9);
+      for (let i = 0; i < n; i++) {
+        const o = 84 + i * 50 + 12;
+        for (let k = 0; k < 9; k++) pos[i * 9 + k] = dv.getFloat32(o + k * 4, true);
+      }
+      return pos;
+    }
+  }
+  // ASCII STL / OBJ: reuse the array parsers, then triangulate into typed storage
+  const parsed = /\.obj$/i.test(name) ? parseOBJ(new TextDecoder().decode(buf)) : parseSTL(buf);
+  if (!parsed.faces.length) throw new Error("No geometry found in that file.");
+  let tris = 0; for (const f of parsed.faces) tris += f.length - 2;
+  const pos = new Float32Array(tris * 9);
+  let t = 0;
+  for (const f of parsed.faces) for (let k = 1; k < f.length - 1; k++) {
+    const tri = [parsed.verts[f[0]], parsed.verts[f[k]], parsed.verts[f[k + 1]]];
+    for (let v = 0; v < 3; v++) pos.set(tri[v], t * 9 + v * 3);
+    t++;
+  }
+  return pos;
+}
+// Same normalize rules as the array path (stand z-up files upright, scale to croquis height), in place.
+function normalizeTypedPos(pos) {
+  const bbox = () => {
+    const mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
+    for (let i = 0; i < pos.length; i += 3) for (let k = 0; k < 3; k++) {
+      const v = pos[i + k]; if (v < mn[k]) mn[k] = v; if (v > mx[k]) mx[k] = v;
+    }
+    return { mn, mx };
+  };
+  let { mn, mx } = bbox();
+  if ((mx[2] - mn[2]) > (mx[1] - mn[1]) * 1.2) {
+    for (let i = 0; i < pos.length; i += 3) { const y = pos[i + 1]; pos[i + 1] = pos[i + 2]; pos[i + 2] = -y; }
+    ({ mn, mx } = bbox());
+  }
+  const c = [(mn[0] + mx[0]) / 2, (mn[1] + mx[1]) / 2, (mn[2] + mx[2]) / 2];
+  const s = 170 / Math.max(mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2], 1e-9);
+  for (let i = 0; i < pos.length; i += 3) for (let k = 0; k < 3; k++) pos[i + k] = (pos[i + k] - c[k]) * s;
+  return pos;
+}
+// Vertex-clustering decimation on typed soup (only used when the file exceeds the cap).
+function decimateTypedPos(pos, target) {
+  const nT = pos.length / 9;
+  if (nT <= target) return pos;
+  for (const N of [640, 512, 400, 320, 256, 200, 160, 128, 96, 72]) {
+    const cell = 172 / N, cellMap = new Map(), sum = [], cnt = [];
+    const q = (v) => Math.floor((v + 86) / cell);
+    const cid = new Int32Array(nT * 3);
+    for (let i = 0; i < nT * 3; i++) {
+      const k = (q(pos[i * 3]) * 4096 + q(pos[i * 3 + 1])) * 4096 + q(pos[i * 3 + 2]);
+      let id = cellMap.get(k);
+      if (id === undefined) { id = cnt.length; cellMap.set(k, id); sum.push([0, 0, 0]); cnt.push(0); }
+      sum[id][0] += pos[i * 3]; sum[id][1] += pos[i * 3 + 1]; sum[id][2] += pos[i * 3 + 2]; cnt[id]++;
+      cid[i] = id;
+    }
+    const seen = new Set(); let kept = 0;
+    const keep = new Int32Array(nT);
+    for (let t = 0; t < nT; t++) {
+      const a = cid[t * 3], b = cid[t * 3 + 1], c = cid[t * 3 + 2];
+      if (a === b || b === c || a === c) continue;
+      const key = [a, b, c].sort((x, y) => x - y).join(",");
+      if (seen.has(key)) continue; seen.add(key);
+      keep[kept++] = t;
+    }
+    if (kept <= target) {
+      const out = new Float32Array(kept * 9);
+      for (let j = 0; j < kept; j++) {
+        const t = keep[j];
+        for (let v = 0; v < 3; v++) {
+          const id = cid[t * 3 + v];
+          out[j * 9 + v * 3] = sum[id][0] / cnt[id]; out[j * 9 + v * 3 + 1] = sum[id][1] / cnt[id]; out[j * 9 + v * 3 + 2] = sum[id][2] / cnt[id];
+        }
+      }
+      return out;
+    }
+  }
+  throw new Error("Couldn't reduce this mesh under the GPU cap.");
+}
+function buildMeshTyped(pos) {
+  const nT = pos.length / 9;
+  const faceNormals = new Float32Array(nT * 3);
+  for (let t = 0; t < nT; t++) {
+    const o = t * 9;
+    const ux = pos[o + 3] - pos[o], uy = pos[o + 4] - pos[o + 1], uz = pos[o + 5] - pos[o + 2];
+    const vx = pos[o + 6] - pos[o], vy = pos[o + 7] - pos[o + 1], vz = pos[o + 8] - pos[o + 2];
+    let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    const m = Math.hypot(nx, ny, nz) || 1;
+    faceNormals[t * 3] = nx / m; faceNormals[t * 3 + 1] = ny / m; faceNormals[t * 3 + 2] = nz / m;
+  }
+  const mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < pos.length; i += 3) for (let k = 0; k < 3; k++) {
+    const v = pos[i + k]; if (v < mn[k]) mn[k] = v; if (v > mx[k]) mx[k] = v;
+  }
+  const center = [(mn[0] + mx[0]) / 2, (mn[1] + mx[1]) / 2, (mn[2] + mx[2]) / 2];
+  let radius = 1;
+  for (let i = 0; i < pos.length; i += 3) {
+    const d = Math.hypot(pos[i] - center[0], pos[i + 1] - center[1], pos[i + 2] - center[2]);
+    if (d > radius) radius = d;
+  }
+  return { typed: true, pos, faceNormals, center, radius };
+}
+/* ---- IndexedDB: full-detail meshes and their zone maps don't fit localStorage. ---- */
+const idb = {
+  _db: null,
+  open() {
+    if (this._db) return Promise.resolve(this._db);
+    return new Promise((res, rej) => {
+      const r = indexedDB.open("lightbench", 1);
+      r.onupgradeneeded = () => r.result.createObjectStore("kv");
+      r.onsuccess = () => res((this._db = r.result));
+      r.onerror = () => rej(r.error);
+    });
+  },
+  async set(k, v) { const db = await this.open(); return new Promise((res, rej) => { const tx = db.transaction("kv", "readwrite"); tx.objectStore("kv").put(v, k); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); }); },
+  async get(k) { const db = await this.open(); return new Promise((res, rej) => { const rq = db.transaction("kv").objectStore("kv").get(k); rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error); }); },
+  async del(k) { const db = await this.open(); return new Promise((res, rej) => { const tx = db.transaction("kv", "readwrite"); tx.objectStore("kv").delete(k); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); }); },
+};
+
 // ---- Generic croquis figures (~8 heads tall), higher facet counts + sculpted side
 //      profile (chest forward, seat back, posture S-curve via the prism z-lean) and
 //      proper hands/feet. Built from prisms (masses) + segments (limbs). +y up, +z front. ----
@@ -929,7 +1075,7 @@ const MESH3D = new Proxy(meshCache, {
 // Canvas renderer — fast enough for the decimated scan (~2-3k faces) where SVG would choke.
 // Same engine: world-space normal -> light -> tier color, flat-shaded; painter's sort + cull;
 // mild perspective; drag to orbit (light fixed in world). noDrag renders a static thumbnail.
-const Model3D = React.memo(function Model3D({ mesh, L, ramp, mode, isoTier, tierKeys, glazeOn, glazeLayers, pooling, valueMode, sprayOn = false, focus = 0.5, sprayColor = "#cfe3ef", orbOn = false, Lorb = null, orbColor = "#3fb8ff", orbInt = 0.5, noDrag, initRot, zoneRamps = null, zoneMap = null, onPickFace = null, brushSize = 0, onBrushFaces = null }) {
+const Model3DCanvas = React.memo(function Model3DCanvas({ mesh, L, ramp, mode, isoTier, tierKeys, glazeOn, glazeLayers, pooling, valueMode, sprayOn = false, focus = 0.5, sprayColor = "#cfe3ef", orbOn = false, Lorb = null, orbColor = "#3fb8ff", orbInt = 0.5, noDrag, initRot, zoneRamps = null, zoneMap = null, zoneMetals = null, zoneVer = 0, onPickFace = null, brushSize = 0, onBrushFaces = null }) {
   const [rot, setRot] = useState(initRot || { yaw: -0.5, pitch: 0.12 });
   const [zoom, setZoom] = useState(1);
   const ringRef = useRef(null);
@@ -1029,13 +1175,16 @@ const Model3D = React.memo(function Model3D({ mesh, L, ramp, mode, isoTier, tier
     let bright = null;
     for (const o of vis) {
       // each face shades from its zone's ramp (zone 0 = the main ramp)
-      const zr = (zoneRamps && (zoneRamps[(zoneMap && zoneMap[o.i]) || 0] || zoneRamps[0])) || ramp;
+      const zif = (zoneMap && zoneMap[o.i]) || 0;
+      const zr = (zoneRamps && (zoneRamps[zif] || zoneRamps[0])) || ramp;
+      const met = zoneMetals && zoneMetals[zif];
       const idx = tierIndex(o.b, zr.length);
       let fill, dim = isoTier != null && tierKeys[idx] !== isoTier;
       if (sprayOn) { fill = mix("#33322d", sprayColor, sprayCoverage(o.n, L, focus)); dim = false; }
       else if (mode === "prime") fill = "#1b1b1b";
       else if (mode === "zenithal") fill = valueGrey(o.b);
       else if (glazeOn) fill = glazeColor(o.b, glazeLayers, pooling);
+      else if (met) fill = nmmColor(met, o.b, o.n); // NMM zone: metal shading, not the tier ramp
       else fill = zr[idx];
       if (valueMode && mode === "paint" && !sprayOn) fill = valueGreyOf(fill);
       if (orbOn && Lorb && !sprayOn) fill = orbGlow(fill, o.n, Lorb, orbColor, orbInt);
@@ -1059,7 +1208,7 @@ const Model3D = React.memo(function Model3D({ mesh, L, ramp, mode, isoTier, tier
       ctx.fillStyle = g; ctx.beginPath(); ctx.arc(X, Y, 18, 0, Math.PI * 2); ctx.fill();
       ctx.fillStyle = "#fff6da"; ctx.beginPath(); ctx.arc(X, Y, 3, 0, Math.PI * 2); ctx.fill();
     }
-  }, [mesh, brights, L, ramp, mode, isoTier, tierKeys, glazeOn, glazeLayers, pooling, valueMode, sprayOn, focus, sprayColor, orbOn, Lorb, orbColor, orbInt, rot, zoom, zoneRamps, zoneMap, onPickFace]);
+  }, [mesh, brights, L, ramp, mode, isoTier, tierKeys, glazeOn, glazeLayers, pooling, valueMode, sprayOn, focus, sprayColor, orbOn, Lorb, orbColor, orbInt, rot, zoom, zoneRamps, zoneMap, zoneMetals, zoneVer, onPickFace]);
 
   return (
     <div className="relative flex flex-col items-center">
@@ -1083,6 +1232,438 @@ const Model3D = React.memo(function Model3D({ mesh, L, ramp, mode, isoTier, tier
     </div>
   );
 });
+
+/* ============================== WEBGL RENDERER ==============================
+   GPU port of the same shading model, so full-detail STLs (hundreds of
+   thousands of faces) render and paint interactively. Falls back to the
+   canvas renderer automatically when WebGL2 isn't available. ---- */
+const hexV3 = (h) => [parseInt(h.slice(1, 3), 16) / 255, parseInt(h.slice(3, 5), 16) / 255, parseInt(h.slice(5, 7), 16) / 255];
+// Convert any mesh (n-gon faces or typed triangle soup) into GPU-ready buffers.
+function glifyMesh(mesh) {
+  if (mesh.glb) return mesh.glb;
+  let pos, nrm, fid, faceNormals, ao = null, nFaces, triCount;
+  if (mesh.typed) {
+    pos = mesh.pos; triCount = pos.length / 9; nFaces = triCount;
+    faceNormals = mesh.faceNormals;
+    nrm = new Float32Array(pos.length); fid = new Float32Array(triCount * 3);
+    for (let i = 0; i < triCount; i++) for (let k = 0; k < 3; k++) {
+      nrm[i * 9 + k * 3] = faceNormals[i * 3]; nrm[i * 9 + k * 3 + 1] = faceNormals[i * 3 + 1]; nrm[i * 9 + k * 3 + 2] = faceNormals[i * 3 + 2];
+      fid[i * 3 + k] = i;
+    }
+  } else {
+    nFaces = mesh.faces.length;
+    triCount = 0; for (const f of mesh.faces) triCount += f.length - 2;
+    pos = new Float32Array(triCount * 9); nrm = new Float32Array(triCount * 9); fid = new Float32Array(triCount * 3);
+    faceNormals = new Float32Array(nFaces * 3); ao = new Uint8Array(nFaces);
+    let t = 0;
+    mesh.faces.forEach((f, i) => {
+      faceNormals.set(mesh.normals[i], i * 3);
+      ao[i] = Math.round(clamp(mesh.ao[i], 0, 1) * 255);
+      for (let k = 1; k < f.length - 1; k++) {
+        const tri = [f[0], f[k], f[k + 1]];
+        for (let v = 0; v < 3; v++) { pos.set(tri[v], t * 9 + v * 3); nrm.set(mesh.normals[i], t * 9 + v * 3); fid[t * 3 + v] = i; }
+        t++;
+      }
+    });
+  }
+  let lines = null; // facet edges keep low-poly figures legible
+  if (!mesh.typed && nFaces < 300) {
+    const seg = [];
+    for (const f of mesh.faces) for (let a = 0; a < f.length; a++) seg.push(...f[a], ...f[(a + 1) % f.length]);
+    lines = new Float32Array(seg);
+  }
+  return (mesh.glb = { pos, nrm, fid, faceNormals, ao, nFaces, triCount, lines, center: mesh.center, radius: mesh.radius });
+}
+// Face adjacency over the GPU buffers (works for both mesh flavors) — for patch fill.
+function glAdjacency(g) {
+  if (g._adj) return g._adj;
+  const q = (v) => Math.round(v * 10) + 8192;
+  const vids = new Map(), vidOf = new Int32Array(g.triCount * 3);
+  for (let i = 0; i < g.triCount * 3; i++) {
+    const k = (q(g.pos[i * 3]) * 16384 + q(g.pos[i * 3 + 1])) * 16384 + q(g.pos[i * 3 + 2]);
+    let id = vids.get(k); if (id === undefined) { id = vids.size; vids.set(k, id); }
+    vidOf[i] = id;
+  }
+  const adj = Array.from({ length: g.nFaces }, () => []);
+  const edges = new Map();
+  for (let t = 0; t < g.triCount; t++) {
+    const f = g.fid[t * 3];
+    for (let e = 0; e < 3; e++) {
+      const a = vidOf[t * 3 + e], b = vidOf[t * 3 + ((e + 1) % 3)];
+      const ek = a < b ? a * 16777216 + b : b * 16777216 + a;
+      const o = edges.get(ek);
+      if (o === undefined) edges.set(ek, f);
+      else if (o !== f) { adj[f].push(o); adj[o].push(f); }
+    }
+  }
+  return (g._adj = adj);
+}
+function glZonePatch(g, start, maxFaces = 60000) {
+  const adj = glAdjacency(g), fn = g.faceNormals;
+  const dotF = (a, b) => fn[a * 3] * fn[b * 3] + fn[a * 3 + 1] * fn[b * 3 + 1] + fn[a * 3 + 2] * fn[b * 3 + 2];
+  const out = [start], seen = new Set(out);
+  for (let qi = 0; qi < out.length && out.length < maxFaces; qi++)
+    for (const j of adj[out[qi]]) if (!seen.has(j) && dotF(out[qi], j) > 0.72) { seen.add(j); out.push(j); }
+  return out;
+}
+const GL_VERT = `#version 300 es
+precision highp float;
+in vec3 aPos; in vec3 aNrm; in float aFid;
+uniform vec3 uCenter; uniform vec4 uRot;
+uniform float uSX, uSY, uCamDist, uZr;
+out vec3 vWN; out float vCNz; flat out int vFid;
+vec3 rotv(vec3 p){
+  p = vec3(uRot.x*p.x + uRot.y*p.z, p.y, -uRot.y*p.x + uRot.x*p.z);
+  return vec3(p.x, uRot.z*p.y - uRot.w*p.z, uRot.w*p.y + uRot.z*p.z);
+}
+void main(){
+  vec3 v = rotv(aPos - uCenter);
+  vec3 cn = rotv(aNrm);
+  vWN = aNrm; vCNz = cn.z; vFid = int(aFid + 0.5);
+  float w = uCamDist - v.z;
+  gl_Position = vec4(v.x*uSX, v.y*uSY, -v.z*uZr*w, w);
+}`;
+const GL_FRAG = `#version 300 es
+precision highp float;
+precision highp int;
+in vec3 vWN; in float vCNz; flat in int vFid;
+uniform sampler2D uZTex;
+uniform vec3 uL, uLorb, uOrbColor, uSprayColor;
+uniform vec3 uRamps[28];
+uniform vec4 uGlaze[8];
+uniform int uGlazeN, uMode, uNTiers, uIso, uMetals[4];
+uniform float uPooling, uFocus, uOrbInt;
+uniform bool uGlazeOn, uValueMode, uSprayOn, uOrbOn;
+out vec4 frag;
+vec3 hsl2rgb(vec3 hsl){
+  vec3 rgb = clamp(abs(mod(hsl.x*6.0+vec3(0.0,4.0,2.0),6.0)-3.0)-1.0,0.0,1.0);
+  float c = (1.0-abs(2.0*hsl.z-1.0))*hsl.y;
+  return (rgb-0.5)*c + hsl.z;
+}
+vec3 vGrey(float b){ return hsl2rgb(vec3(40.0/360.0, 0.04, 0.12 + b*0.78)); }
+vec3 nmm(int kind, float b, vec3 n){
+  vec3 lo,mid,hi,spark,sky,earth;
+  if (kind==2){ lo=vec3(.165,.102,.039); mid=vec3(.541,.353,.102); hi=vec3(.910,.722,.290); spark=vec3(1.,.965,.847); sky=vec3(1.,.929,.690); earth=vec3(.290,.180,.071); }
+  else { lo=vec3(.078,.090,.114); mid=vec3(.290,.337,.400); hi=vec3(.659,.722,.800); spark=vec3(.957,.973,1.); sky=vec3(.761,.847,.918); earth=vec3(.180,.169,.149); }
+  float t = smoothstep(0.2,0.9,b);
+  vec3 c = t<0.5 ? mix(lo,mid,t*2.0) : mix(mid,hi,(t-0.5)*2.0);
+  if (b>0.88) c = mix(c, spark, smoothstep(0.88,0.98,b));
+  if (n.y>0.0) c = mix(c, sky, n.y*0.35); else c = mix(c, earth, -n.y*0.45);
+  return c;
+}
+void main(){
+  if (vCNz <= 0.001) discard;
+  ivec2 tuv = ivec2(vFid % 2048, vFid / 2048);
+  vec4 zd = texelFetch(uZTex, tuv, 0);
+  int zone = int(zd.r * 255.0 + 0.5);
+  float ao = zd.g;
+  vec3 n = normalize(vWN);
+  float d = dot(n, uL);
+  float b = 0.05*ao + 0.95*smoothstep(-0.3, 1.0, d)*(0.5 + 0.5*ao);
+  int idx = clamp(int(floor(b*float(uNTiers-1) + 0.5)), 0, uNTiers-1);
+  bool dim = (uIso >= 0) && (idx != uIso);
+  vec3 fill;
+  if (uSprayOn) {
+    float edge = -0.15 + uFocus*0.85;
+    float cov = smoothstep(edge, edge + (0.6 - uFocus*0.48), d);
+    fill = mix(vec3(0.200,0.196,0.176), uSprayColor, cov); dim = false;
+  }
+  else if (uMode == 1) fill = vec3(0.106,0.106,0.106);
+  else if (uMode == 2) fill = vGrey(b);
+  else if (uGlazeOn) {
+    vec3 c = vGrey(b);
+    for (int i = 0; i < 8; i++) { if (i >= uGlazeN) break;
+      float eff = clamp(uGlaze[i].a*(1.0 - uPooling*b), 0.0, 1.0);
+      c = mix(c, uGlaze[i].rgb, eff);
+    }
+    fill = c;
+  }
+  else if (uMetals[zone] > 0) fill = nmm(uMetals[zone], b, n);
+  else fill = uRamps[zone*7 + idx];
+  if (uValueMode && uMode == 0 && !uSprayOn) {
+    vec3 lin = pow(fill, vec3(2.2));
+    fill = vec3(pow(dot(lin, vec3(0.2126,0.7152,0.0722)), 1.0/2.2));
+  }
+  if (uOrbOn && !uSprayOn) fill = clamp(fill + uOrbColor * (uOrbInt * smoothstep(0.0,1.0,dot(n,uLorb))), 0.0, 1.0);
+  float alpha = dim ? 0.12 : 1.0;
+  frag = vec4(fill*alpha, alpha);
+}`;
+const GL_PICK_FRAG = `#version 300 es
+precision highp float;
+precision highp int;
+in vec3 vWN; in float vCNz; flat in int vFid;
+out vec4 frag;
+void main(){
+  if (vCNz <= 0.001) discard;
+  frag = vec4(float(vFid % 256)/255.0, float((vFid/256) % 256)/255.0, float(vFid/65536)/255.0, 1.0);
+}`;
+const GL_LINE_VERT = `#version 300 es
+precision highp float;
+in vec3 aPos;
+uniform vec3 uCenter; uniform vec4 uRot;
+uniform float uSX, uSY, uCamDist, uZr;
+vec3 rotv(vec3 p){
+  p = vec3(uRot.x*p.x + uRot.y*p.z, p.y, -uRot.y*p.x + uRot.x*p.z);
+  return vec3(p.x, uRot.z*p.y - uRot.w*p.z, uRot.w*p.y + uRot.z*p.z);
+}
+void main(){
+  vec3 v = rotv(aPos - uCenter);
+  float w = uCamDist - v.z;
+  gl_Position = vec4(v.x*uSX, v.y*uSY, -v.z*uZr*w*0.999, w);
+}`;
+const GL_LINE_FRAG = `#version 300 es
+precision highp float; out vec4 frag;
+void main(){ frag = vec4(0.0, 0.0, 0.0, 0.2); }`;
+function glProgram(gl, vs, fs) {
+  const mk = (type, srcTxt) => {
+    const s = gl.createShader(type); gl.shaderSource(s, srcTxt); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error("shader: " + gl.getShaderInfoLog(s));
+    return s;
+  };
+  const p = gl.createProgram();
+  gl.attachShader(p, mk(gl.VERTEX_SHADER, vs)); gl.attachShader(p, mk(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error("link: " + gl.getProgramInfoLog(p));
+  return p;
+}
+
+const ZTEX_W = 2048;
+let meshKeyN = 0;
+const ModelGL = React.memo(function ModelGL({ mesh, L, ramp, mode, isoTier, tierKeys, glazeOn, glazeLayers, pooling, valueMode, sprayOn = false, focus = 0.5, sprayColor = "#cfe3ef", orbOn = false, Lorb = null, orbColor = "#3fb8ff", orbInt = 0.5, noDrag, initRot, zoneRamps = null, zoneMetals = null, zoneArr = null, zoneVer = 0, onPickFace = null, brushSize = 0, onBrushFaces = null, onGLFail }) {
+  const [rot, setRot] = useState(initRot || { yaw: -0.5, pitch: 0.12 });
+  const [zoom, setZoom] = useState(1);
+  const canvasRef = useRef(null), ringRef = useRef(null);
+  const S = useRef(null);
+  const drag = useRef(null), raf = useRef(0), pendingRot = useRef(null);
+  // A lost/reused context can't be revived on the same element — remount the canvas per mesh.
+  const meshKey = useMemo(() => { meshKeyN += 1; return meshKeyN; }, [mesh]);
+
+  useEffect(() => { // one-time GL setup per mesh
+    const cnv = canvasRef.current; if (!cnv) return;
+    let gl;
+    try {
+      gl = cnv.getContext("webgl2", { alpha: true, antialias: true, preserveDrawingBuffer: true });
+      if (!gl || !gl.createShader) throw new Error("no webgl2");
+      const g = glifyMesh(mesh);
+      const prog = glProgram(gl, GL_VERT, GL_FRAG);
+      const pick = glProgram(gl, GL_VERT, GL_PICK_FRAG);
+      const line = g.lines ? glProgram(gl, GL_LINE_VERT, GL_LINE_FRAG) : null;
+      const buf = (data, loc, size) => {
+        const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, size, gl.FLOAT, false, 0, 0); return b;
+      };
+      const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+      buf(g.pos, 0, 3); buf(g.nrm, 1, 3); buf(g.fid, 2, 1);
+      let lineVao = null;
+      if (line) { lineVao = gl.createVertexArray(); gl.bindVertexArray(lineVao); buf(g.lines, 0, 3); }
+      gl.bindVertexArray(null);
+      const texH = Math.max(1, Math.ceil(g.nFaces / ZTEX_W));
+      const ztex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, ztex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, ZTEX_W, texH, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      const fboTex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, fboTex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, cnv.width, cnv.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      const rb = gl.createRenderbuffer();
+      gl.bindRenderbuffer(gl.RENDERBUFFER, rb);
+      gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, cnv.width, cnv.height);
+      const fbo = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, fboTex, 0);
+      gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, rb);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      const U = (p) => { const c = {}; return (k) => (k in c ? c[k] : (c[k] = gl.getUniformLocation(p, k))); };
+      S.current = { gl, g, prog, pick, line, vao, lineVao, ztex, texH, fbo, up: U(prog), upk: U(pick), ul: line ? U(line) : null, zver: -1, ztmp: new Uint8Array(ZTEX_W * texH * 4) };
+    } catch (err) { S.current = null; onGLFail && onGLFail(); return; }
+    return () => { try { gl.getExtension("WEBGL_lose_context")?.loseContext(); } catch {} S.current = null; };
+  }, [mesh]);
+
+  const setCam = (u, st) => {
+    const { gl, g } = st, cnv = canvasRef.current;
+    const W = cnv.width, H = cnv.height;
+    const fit = (Math.min(W, H) * 0.46 * zoom) / g.radius, camDist = g.radius * 4.2;
+    gl.uniform3fv(u("uCenter"), g.center);
+    gl.uniform4f(u("uRot"), Math.cos(rot.yaw), Math.sin(rot.yaw), Math.cos(rot.pitch), Math.sin(rot.pitch));
+    gl.uniform1f(u("uSX"), (fit * camDist) / (W / 2));
+    gl.uniform1f(u("uSY"), (fit * camDist) / (H / 2));
+    gl.uniform1f(u("uCamDist"), camDist);
+    gl.uniform1f(u("uZr"), 1 / (g.radius * 1.1));
+  };
+  useEffect(() => { // redraw after every commit that touched a visual input
+    const st = S.current; if (!st) return;
+    const { gl, g, up } = st, cnv = canvasRef.current;
+    if (st.zver !== zoneVer) { // (re)upload the per-face zone/AO table
+      const d = st.ztmp;
+      for (let i = 0; i < g.nFaces; i++) {
+        d[i * 4] = zoneArr ? zoneArr[i] : 0;
+        d[i * 4 + 1] = g.ao ? g.ao[i] : 255;
+        d[i * 4 + 3] = 255;
+      }
+      gl.bindTexture(gl.TEXTURE_2D, st.ztex);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, ZTEX_W, st.texH, gl.RGBA, gl.UNSIGNED_BYTE, d);
+      st.zver = zoneVer;
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, cnv.width, cnv.height);
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.enable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE);
+    gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    gl.useProgram(st.prog);
+    setCam(up, st);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, st.ztex); gl.uniform1i(up("uZTex"), 0);
+    gl.uniform3fv(up("uL"), L);
+    gl.uniform3fv(up("uLorb"), Lorb || [0, 0, 1]);
+    gl.uniform3fv(up("uOrbColor"), hexV3(orbColor));
+    gl.uniform3fv(up("uSprayColor"), hexV3(sprayColor));
+    const ramps = new Float32Array(84);
+    const zr = zoneRamps && zoneRamps.length ? zoneRamps : [ramp];
+    for (let z = 0; z < 4; z++) {
+      const r = zr[Math.min(z, zr.length - 1)] || ramp;
+      for (let i = 0; i < 7; i++) ramps.set(hexV3(r[Math.min(i, r.length - 1)]), (z * 7 + i) * 3);
+    }
+    gl.uniform3fv(up("uRamps"), ramps);
+    const gz = new Float32Array(32);
+    const layers = (glazeLayers || []).slice(0, 8);
+    layers.forEach((l, i) => { gz.set(hexV3(l.color), i * 4); gz[i * 4 + 3] = l.opacity; });
+    gl.uniform4fv(up("uGlaze"), gz);
+    gl.uniform1i(up("uGlazeN"), layers.length);
+    gl.uniform1i(up("uMode"), mode === "prime" ? 1 : mode === "zenithal" ? 2 : 0);
+    gl.uniform1i(up("uNTiers"), (zr[0] || ramp).length);
+    gl.uniform1i(up("uIso"), isoTier != null && tierKeys ? tierKeys.indexOf(isoTier) : -1);
+    const mets = [0, 0, 0, 0];
+    (zoneMetals || []).slice(0, 4).forEach((m, i) => { mets[i] = m === "gold" ? 2 : m === "steel" ? 1 : 0; });
+    gl.uniform1iv(up("uMetals"), mets);
+    gl.uniform1f(up("uPooling"), pooling ?? 0.6);
+    gl.uniform1f(up("uFocus"), focus);
+    gl.uniform1f(up("uOrbInt"), orbInt);
+    gl.uniform1i(up("uGlazeOn"), glazeOn ? 1 : 0);
+    gl.uniform1i(up("uValueMode"), valueMode ? 1 : 0);
+    gl.uniform1i(up("uSprayOn"), sprayOn ? 1 : 0);
+    gl.uniform1i(up("uOrbOn"), orbOn && Lorb ? 1 : 0);
+    gl.bindVertexArray(st.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, g.triCount * 3);
+    if (st.line) {
+      gl.useProgram(st.line); setCam(st.ul, st);
+      gl.bindVertexArray(st.lineVao);
+      gl.drawArrays(gl.LINES, 0, g.lines.length / 3);
+    }
+    gl.bindVertexArray(null);
+  });
+
+  const renderPick = () => {
+    const st = S.current; if (!st) return false;
+    const { gl, g } = st, cnv = canvasRef.current;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, st.fbo);
+    gl.viewport(0, 0, cnv.width, cnv.height);
+    gl.disable(gl.BLEND); gl.enable(gl.DEPTH_TEST);
+    gl.clearColor(1, 1, 1, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.useProgram(st.pick); setCam(st.upk, st);
+    gl.bindVertexArray(st.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, g.triCount * 3);
+    gl.bindVertexArray(null);
+    return true;
+  };
+  const evPx = (e) => {
+    const cnv = canvasRef.current, r = cnv.getBoundingClientRect();
+    return [((e.clientX - r.left) / r.width) * cnv.width, ((e.clientY - r.top) / r.height) * cnv.height];
+  };
+  const pickAt = (e) => {
+    const st = S.current; if (!st || !renderPick()) return -1;
+    const { gl, g } = st, cnv = canvasRef.current;
+    const [x, y] = evPx(e);
+    const px = new Uint8Array(4);
+    gl.readPixels(Math.round(x), cnv.height - 1 - Math.round(y), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    const id = px[0] + px[1] * 256 + px[2] * 65536;
+    return id < g.nFaces ? id : -1;
+  };
+  const brushAt = (e) => {
+    const st = S.current; if (!st || !renderPick()) return;
+    const { gl, g } = st, cnv = canvasRef.current;
+    const [x, y] = evPx(e);
+    const R = brushSize, x0 = Math.max(0, Math.round(x - R)), y0 = Math.max(0, Math.round(cnv.height - 1 - y - R));
+    const w = Math.min(cnv.width - x0, Math.round(R * 2)), h = Math.min(cnv.height - y0, Math.round(R * 2));
+    if (w <= 0 || h <= 0) return;
+    const px = new Uint8Array(w * h * 4);
+    gl.readPixels(x0, y0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    const hit = new Set(), R2 = R * R, cx0 = x - x0, cy0 = (cnv.height - 1 - y) - y0;
+    for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+      if ((i - cx0) * (i - cx0) + (j - cy0) * (j - cy0) > R2) continue;
+      const o = (j * w + i) * 4;
+      const id = px[o] + px[o + 1] * 256 + px[o + 2] * 65536;
+      if (id < g.nFaces) hit.add(id);
+    }
+    if (hit.size) onBrushFaces([...hit]);
+  };
+  const moveRing = (e) => {
+    if (!ringRef.current || !onBrushFaces || brushSize <= 0) return;
+    const cnv = canvasRef.current, r = cnv.getBoundingClientRect();
+    const d = brushSize * 2 * (r.width / cnv.width), rs = ringRef.current.style;
+    rs.display = "block"; rs.width = rs.height = d + "px";
+    rs.left = (e.clientX - r.left - d / 2) + "px"; rs.top = (e.clientY - r.top - d / 2) + "px";
+  };
+  const onDown = (e) => {
+    if (noDrag) return;
+    if (onBrushFaces && brushSize > 0) { drag.current = { painting: true }; e.currentTarget.setPointerCapture?.(e.pointerId); brushAt(e); return; }
+    drag.current = { x: e.clientX, y: e.clientY, moved: false, ...rot }; e.currentTarget.setPointerCapture?.(e.pointerId);
+  };
+  const onMove = (e) => {
+    moveRing(e);
+    if (!drag.current) return;
+    if (drag.current.painting) { brushAt(e); return; }
+    const dx = e.clientX - drag.current.x, dy = e.clientY - drag.current.y;
+    if (Math.abs(dx) + Math.abs(dy) > 4) drag.current.moved = true;
+    pendingRot.current = { yaw: drag.current.yaw + dx * 0.01, pitch: clamp(drag.current.pitch + dy * 0.01, -1.2, 1.2) };
+    if (!raf.current) raf.current = requestAnimationFrame(() => { raf.current = 0; setRot(pendingRot.current); });
+  };
+  const onUp = (e) => {
+    const wasPainting = drag.current && drag.current.painting;
+    const wasClick = drag.current && !drag.current.painting && !drag.current.moved;
+    drag.current = null; e.currentTarget.releasePointerCapture?.(e.pointerId);
+    if (e.type === "pointerleave" && ringRef.current) ringRef.current.style.display = "none";
+    if (wasPainting || !wasClick || !onPickFace) return;
+    const id = pickAt(e);
+    if (id >= 0) onPickFace(id);
+  };
+  useEffect(() => () => cancelAnimationFrame(raf.current), []);
+  useEffect(() => {
+    const cnv = canvasRef.current; if (!cnv || noDrag) return;
+    const onWheel = (e) => { e.preventDefault(); setZoom((z) => clamp(z * (e.deltaY < 0 ? 1.15 : 1 / 1.15), 0.6, 4)); };
+    cnv.addEventListener("wheel", onWheel, { passive: false });
+    return () => cnv.removeEventListener("wheel", onWheel);
+  }, [noDrag]);
+  return (
+    <div className="relative flex flex-col items-center">
+      <canvas key={meshKey} ref={canvasRef} width={460} height={600}
+        className={"w-full h-auto select-none touch-none " + (onPickFace || onBrushFaces ? "cursor-crosshair" : noDrag ? "" : "cursor-grab active:cursor-grabbing")}
+        onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerLeave={onUp} />
+      <div ref={ringRef} className="pointer-events-none absolute rounded-full border-2 border-amber-300/70" style={{ display: "none" }} />
+      {!noDrag && (
+        <div className="absolute top-2 right-2 flex flex-col gap-1">
+          <button onClick={() => setZoom((z) => clamp(z * 1.25, 0.6, 4))} aria-label="Zoom in"
+            className="w-7 h-7 rounded-md border border-stone-600 bg-stone-900/70 text-stone-300 hover:text-white text-sm leading-none">+</button>
+          <button onClick={() => setZoom((z) => clamp(z / 1.25, 0.6, 4))} aria-label="Zoom out"
+            className="w-7 h-7 rounded-md border border-stone-600 bg-stone-900/70 text-stone-300 hover:text-white text-sm leading-none">−</button>
+          {zoom !== 1 && (
+            <button onClick={() => setZoom(1)} aria-label="Reset zoom"
+              className="w-7 h-7 rounded-md border border-stone-600 bg-stone-900/70 text-stone-400 hover:text-white text-[10px] leading-none">1:1</button>
+          )}
+        </div>
+      )}
+      {!noDrag && <div className="mt-1 text-[10px] tracking-[0.25em] uppercase text-stone-400">3D · drag to rotate · scroll to zoom</div>}
+    </div>
+  );
+});
+// Public 3D view: WebGL when available, the canvas renderer as automatic fallback.
+function Model3D(props) {
+  const [useGL, setUseGL] = useState(true);
+  if (useGL) return <ModelGL {...props} onGLFail={() => setUseGL(false)} />;
+  return <Model3DCanvas {...props} zoneMap={props.zoneArr} />;
+}
 
 /* ============================== HEX SWATCH ============================== */
 function Hex({ color, size = 34 }) {
@@ -1222,9 +1803,18 @@ export default function App() {
     if (k) { const i = tierKeys.indexOf(k); if (i >= 0) return ramp[i]; }
     return ramp[ramp.length - 1];
   }, [stage, tierKeys, ramp]); // the active step's tier color is what the spray "lays down"
+  const [mainMetal, setMainMetal] = useState(null); // null | "steel" | "gold" for zone 0
   const zoneRamps = useMemo(() => [ramp, ...extraZones.map((z) => z.ramp)], [ramp, extraZones]);
   const zoneNames = useMemo(() => ["Main", ...extraZones.map((z) => z.name)], [extraZones]);
-  const zoneMatches = useMemo(() => zoneRamps.map((zr) => zr.map((c) => nearestPaint(c, paintBrand))), [zoneRamps, paintBrand]);
+  const zoneMetals = useMemo(() => [mainMetal, ...extraZones.map((z) => z.metal || null)], [mainMetal, extraZones]);
+  // What each zone LOOKS like (metal zones show the NMM ramp) — drives swatches + paint matching.
+  const dispRamps = useMemo(() => zoneRamps.map((zr, zi) => (zoneMetals[zi] ? nmmRamp(zoneMetals[zi], zr.length) : zr)), [zoneRamps, zoneMetals]);
+  const zoneMatches = useMemo(() => dispRamps.map((zr) => zr.map((c) => nearestPaint(c, paintBrand))), [dispRamps, paintBrand]);
+  const cycleMetal = (zi) => {
+    const next = { null: "steel", steel: "gold", gold: null }[String(zoneMetals[zi])];
+    if (zi === 0) setMainMetal(next);
+    else setExtraZones((zs) => zs.map((z, k) => (k === zi - 1 ? { ...z, metal: next } : z)));
+  };
   const accentMatches = useMemo(() => accents.map((c) => nearestPaint(c, paintBrand)), [accents, paintBrand]);
   // Zone assignment handlers — clicking the figure paints the active zone onto it.
   const pickRegion = useCallback((viewKey) => (i) => {
@@ -1235,23 +1825,51 @@ export default function App() {
       return { ...m, [model]: mm };
     });
   }, [model, activeZone]);
+  // 3D zone data lives in flat per-face arrays (fast enough to brush a 500k-face scan);
+  // the sparse object form is only for persistence of the small built-in models.
+  const zoneArrs = useRef({});
+  const [zoneVer, setZoneVer] = useState(0);
+  const zoneArrFor = (mdl) => {
+    let a = zoneArrs.current[mdl];
+    if (!a) {
+      const mesh = MESH3D[mdl]; if (!mesh) return null;
+      const g = glifyMesh(mesh);
+      a = new Uint8Array(g.nFaces);
+      const sparse = zoneMap3d[mdl];
+      if (sparse) for (const k in sparse) { const i = +k; if (i < a.length) a[i] = sparse[k]; }
+      zoneArrs.current[mdl] = a;
+    }
+    return a;
+  };
+  const zonePersistTimer = useRef(null);
+  const scheduleZonePersist = (mdl) => {
+    clearTimeout(zonePersistTimer.current);
+    zonePersistTimer.current = setTimeout(() => {
+      const a = zoneArrs.current[mdl]; if (!a) return;
+      if (mdl === "custom") idb.set("customzones", a).catch(() => {});
+      if (mdl === "custom" && a.length > 20000) return; // too big for the session JSON
+      const sparse = {};
+      for (let i = 0; i < a.length; i++) if (a[i]) sparse[i] = a[i];
+      setZoneMap3d((m) => ({ ...m, [mdl]: sparse }));
+    }, 400);
+  };
+  const applyFaces = useCallback((idxs) => {
+    const a = zoneArrFor(model); if (!a) return;
+    for (const f of idxs) a[f] = activeZone;
+    setZoneVer((v) => v + 1);
+    scheduleZonePersist(model);
+  }, [model, activeZone]); // eslint-disable-line react-hooks/exhaustive-deps
   const pickFace = useCallback((i) => {
     const mesh = MESH3D[model]; if (!mesh) return;
-    const faces = zonePatch(mesh, i); // patch mode: a click grabs the smooth connected patch
-    setZoneMap3d((m) => {
-      const mm = { ...(m[model] || {}) };
-      for (const f of faces) { if (activeZone === 0) delete mm[f]; else mm[f] = activeZone; }
-      return { ...m, [model]: mm };
-    });
-  }, [model, activeZone]);
-  const brushFaces = useCallback((idxs) => { // brush mode: paint exactly what the cursor touches
-    setZoneMap3d((m) => {
-      const mm = { ...(m[model] || {}) };
-      for (const f of idxs) { if (activeZone === 0) delete mm[f]; else mm[f] = activeZone; }
-      return { ...m, [model]: mm };
-    });
-  }, [model, activeZone]);
-  const clearZones = () => { setZoneMap2d((m) => ({ ...m, [model]: {} })); setZoneMap3d((m) => ({ ...m, [model]: {} })); };
+    applyFaces(glZonePatch(glifyMesh(mesh), i)); // patch mode: a click grabs the smooth connected patch
+  }, [model, applyFaces]);
+  const brushFaces = applyFaces; // brush mode: paint exactly what the cursor touches
+  const clearZones = () => {
+    setZoneMap2d((m) => ({ ...m, [model]: {} })); setZoneMap3d((m) => ({ ...m, [model]: {} }));
+    const a = zoneArrs.current[model]; if (a) a.fill(0);
+    if (model === "custom") idb.del("customzones").catch(() => {});
+    setZoneVer((v) => v + 1);
+  };
   const addZone = () => {
     if (extraZones.length >= 3) return;
     const presets = [["Cloak", "#7a3b3b"], ["Armor", "#4a5a6a"], ["Skin", "#c98a6a"]];
@@ -1265,6 +1883,8 @@ export default function App() {
     setZoneMap3d((m) => Object.fromEntries(Object.entries(m).map(([k, v]) => [k, stripFlat(v)])));
     setZoneMap2d((m) => Object.fromEntries(Object.entries(m).map(([k, views]) => [k,
       Object.fromEntries(Object.entries(views).map(([vk, v]) => [vk, stripFlat(v)]))])));
+    for (const a of Object.values(zoneArrs.current)) if (a) { for (let i = 0; i < a.length; i++) if (a[i] === z) a[i] = 0; }
+    setZoneVer((v) => v + 1);
     setExtraZones((zs) => zs.slice(0, -1));
     setActiveZone((a) => (a >= z ? 0 : a));
   };
@@ -1272,7 +1892,7 @@ export default function App() {
     setExtraZones((zs) => zs.map((zz, k) => (k === zi - 1 ? { ...zz, base: hex, ramp: generateRamp(hex, numSteps) } : zz)));
   };
   const only3d = !!(model && MODELS[model].only3d); // 3D-only model (no orthographic sheet)
-  const views = (model && MODELS[model].views) || MODELS.standing.views; // fallback so sheet/preview code never sees undefined
+  const views = (model && MODELS[model].views) || STANDING; // fallback so sheet/preview code never sees undefined
   const previewRegions = frontOf(views);
 
   // load saved recipe names
@@ -1308,7 +1928,7 @@ export default function App() {
 
   const save = async () => {
     const nm = name.trim(); if (!nm) { setStatus("Name it first."); return; }
-    const recipe = { base, numSteps, ramp, accents, az, el, done, glazeOn, pooling, glazeLayers, method, spray, focus, orbOn, orbAz, orbEl, orbColor, orbInt, extraZones };
+    const recipe = { base, numSteps, ramp, accents, az, el, done, glazeOn, pooling, glazeLayers, method, spray, focus, orbOn, orbAz, orbEl, orbColor, orbInt, extraZones, mainMetal };
     if (!window.storage) { setStatus("Storage unavailable in preview."); return; }
     try { await window.storage.set("recipe:" + nm, JSON.stringify(recipe)); setStatus("Saved “" + nm + "”."); refreshList(); }
     catch { setStatus("Save failed."); }
@@ -1334,10 +1954,13 @@ export default function App() {
     setSpray(!!r.spray); setFocus(num(r.focus, 0.5, 0, 1));
     setOrbOn(!!r.orbOn); setOrbAz(num(r.orbAz, 200, 0, 360)); setOrbEl(num(r.orbEl, 0, -20, 90));
     setOrbColor(validHex(r.orbColor) ? r.orbColor : "#3fb8ff"); setOrbInt(num(r.orbInt, 0.5, 0, 1));
+    const metalOk = (m) => (m === "steel" || m === "gold" ? m : null);
+    setMainMetal(metalOk(r.mainMetal));
     setExtraZones(Array.isArray(r.extraZones)
       ? r.extraZones.slice(0, 3).filter((z) => z && validHex(z.base)).map((z, k) => ({
           name: typeof z.name === "string" && z.name.trim() ? z.name.slice(0, 24) : "Zone " + (k + 2),
           base: z.base,
+          metal: metalOk(z.metal),
           ramp: Array.isArray(z.ramp) && z.ramp.length === steps && z.ramp.every(validHex) ? z.ramp : generateRamp(z.base, steps),
         }))
       : []);
@@ -1363,8 +1986,15 @@ export default function App() {
     (async () => {
       if (window.storage) {
         try { // restore an imported mesh first, so a "custom" session can reopen onto it
-          const cm = await window.storage.get("custommesh:last");
-          if (cm) { const d = JSON.parse(cm.value); meshCache.custom = buildMeshIndexed(d.verts, d.faces); if (d.target) setDetail(d.target); setCustomReady(true); }
+          const rec = await idb.get("custommesh").catch(() => null);
+          if (rec && rec.kind === "typed" && rec.pos) { meshCache.custom = buildMeshTyped(rec.pos); if (rec.target) setDetail(rec.target); setCustomReady(true); }
+          else if (rec && rec.kind === "classic" && rec.dec) { meshCache.custom = buildMeshIndexed(rec.dec.verts, rec.dec.faces); if (rec.target) setDetail(rec.target); setCustomReady(true); }
+          else {
+            const cm = await window.storage.get("custommesh:last"); // legacy location
+            if (cm) { const d = JSON.parse(cm.value); meshCache.custom = buildMeshIndexed(d.verts, d.faces); if (d.target) setDetail(d.target); setCustomReady(true); }
+          }
+          const zs = await idb.get("customzones").catch(() => null);
+          if (zs && zs.length && meshCache.custom) { zoneArrs.current.custom = zs; setZoneVer((v) => v + 1); }
         } catch {}
         try {
           const res = await window.storage.get("session:last");
@@ -1390,10 +2020,10 @@ export default function App() {
     // Debounced: sliders fire this every tick; one write after the user pauses is enough.
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
-      try { window.storage.set("session:last", JSON.stringify({ model, activeStage, base, numSteps, ramp, accents, az, el, done, glazeOn, pooling, glazeLayers, method, spray, focus, orbOn, orbAz, orbEl, orbColor, orbInt, paintBrand, extraZones, zoneMap2d, zoneMap3d, openSec })); } catch {}
+      try { window.storage.set("session:last", JSON.stringify({ model, activeStage, base, numSteps, ramp, accents, az, el, done, glazeOn, pooling, glazeLayers, method, spray, focus, orbOn, orbAz, orbEl, orbColor, orbInt, paintBrand, extraZones, mainMetal, zoneMap2d, zoneMap3d, openSec })); } catch {}
     }, 300);
     return () => clearTimeout(saveTimer.current);
-  }, [model, activeStage, base, numSteps, ramp, accents, az, el, done, glazeOn, pooling, glazeLayers, method, spray, focus, orbOn, orbAz, orbEl, orbColor, orbInt, paintBrand, extraZones, zoneMap2d, zoneMap3d, openSec]);
+  }, [model, activeStage, base, numSteps, ramp, accents, az, el, done, glazeOn, pooling, glazeLayers, method, spray, focus, orbOn, orbAz, orbEl, orbColor, orbInt, paintBrand, extraZones, mainMetal, zoneMap2d, zoneMap3d, openSec]);
 
   // Export a painting-reference PNG: the figure as shown + value ramp, accents, light & glaze.
   const exportPNG = () => {
@@ -1419,8 +2049,10 @@ export default function App() {
       const s = Math.min(figW / 200, figH / 460), ox = fx + (figW - 200 * s) / 2;
       const zmFront = zoneMap2d[model]?.front || {};
       for (const [ri, r] of previewRegions.entries()) {
-        const zr = zoneRamps[zmFront[ri] || 0] || ramp;
-        const fill = zr[tierIndex(brightness(r.n, L, r.ao), zr.length)];
+        const zif = zmFront[ri] || 0;
+        const zr = zoneRamps[zif] || ramp, met = zoneMetals[zif];
+        const b2 = brightness(r.n, L, r.ao);
+        const fill = met ? nmmColor(met, b2, r.n) : zr[tierIndex(b2, zr.length)];
         ctx.beginPath();
         r.p.trim().split(/\s+/).forEach((pt, i) => { const [x, y] = pt.split(",").map(Number); const X = ox + x * s, Y = fy + y * s; i ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y); });
         ctx.closePath(); ctx.fillStyle = fill; ctx.fill(); ctx.lineWidth = 0.5; ctx.strokeStyle = "#00000033"; ctx.stroke();
@@ -1446,7 +2078,7 @@ export default function App() {
       }
       tiers.forEach((t, i) => {
         const m = matches[i]; if (!m) return;
-        ctx.fillStyle = zoneRamps[zi][i]; ctx.fillRect(rx, ry - 9, 11, 11);
+        ctx.fillStyle = dispRamps[zi][i]; ctx.fillRect(rx, ry - 9, 11, 11);
         ctx.strokeStyle = "#00000044"; ctx.strokeRect(rx, ry - 9, 11, 11);
         ctx.fillStyle = "#d6d3d1"; ctx.font = "11px Segoe UI, system-ui, sans-serif";
         ctx.fillText(t.label + " — " + m.name + " (" + PAINT_BRANDS[m.brand] + ")", rx + 17, ry);
@@ -1479,12 +2111,23 @@ export default function App() {
     setDetail(target);
     setImportMsg("Reading “" + file.name + "”…");
     try {
-      const dec = importMeshFromFile(file.name, await file.arrayBuffer(), target);
-      dec.target = target; // remembered so the detail picker restores with the mesh
-      meshCache.custom = buildMeshIndexed(dec.verts, dec.faces);
-      setZoneMap3d((m) => ({ ...m, custom: {} })); // face indices don't survive a new mesh
+      const buf = await file.arrayBuffer();
+      if (target >= 100000) { // Full: the actual STL, GPU-rendered (capped, not simplified below the cap)
+        const pos = decimateTypedPos(normalizeTypedPos(parseToTypedPos(file.name, buf)), FULL_DETAIL);
+        meshCache.custom = buildMeshTyped(pos);
+        try { await idb.set("custommesh", { kind: "typed", pos, target }); } catch {}
+      } else {
+        const dec = importMeshFromFile(file.name, buf, target);
+        dec.target = target; // remembered so the detail picker restores with the mesh
+        meshCache.custom = buildMeshIndexed(dec.verts, dec.faces);
+        try { await idb.set("custommesh", { kind: "classic", dec, target }); }
+        catch { try { await window.storage?.set("custommesh:last", JSON.stringify(dec)); } catch {} }
+      }
+      try { await idb.del("customzones"); } catch {}
+      zoneArrs.current.custom = null; // face indices don't survive a new mesh
+      setZoneMap3d((m) => ({ ...m, custom: {} }));
+      setZoneVer((v) => v + 1);
       setCustomReady(true); setImportMsg("");
-      try { await window.storage?.set("custommesh:last", JSON.stringify(dec)); } catch {}
       setModel("custom");
     } catch (e) { setImportMsg(String(e?.message || e)); }
   };
@@ -1549,7 +2192,7 @@ export default function App() {
                     <button key={zi} onClick={() => setActiveZone(zi)} aria-pressed={activeZone === zi}
                       className={"flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] border " +
                         (activeZone === zi ? "border-lime-400 text-stone-100 bg-stone-900/90" : "border-stone-600 text-stone-300 bg-stone-900/70 hover:border-stone-400")}>
-                      <span className="w-2.5 h-2.5 rounded-full" style={{ background: zoneRamps[zi][Math.floor(zoneRamps[zi].length / 2)] }} />
+                      <span className="w-2.5 h-2.5 rounded-full" style={{ background: dispRamps[zi][Math.floor(dispRamps[zi].length / 2)] }} />
                       {nm}
                     </button>
                   ))}
@@ -1567,7 +2210,7 @@ export default function App() {
                   tierKeys={tierKeys} glazeOn={glazeOn} glazeLayers={glazeLayers} pooling={pooling} valueMode={valueMode}
                   sprayOn={sprayActive} focus={focus} sprayColor={sprayColor}
                   orbOn={orbOn} Lorb={Lorb} orbColor={orbColor} orbInt={orbInt}
-                  zoneRamps={zoneRamps} zoneMap={zoneMap3d[model]}
+                  zoneRamps={zoneRamps} zoneArr={zoneArrFor(model)} zoneVer={zoneVer} zoneMetals={zoneMetals}
                   onPickFace={zonePaint && zoneMode === "patch" ? pickFace : null}
                   brushSize={zonePaint && zoneMode === "brush" ? brushSize : 0}
                   onBrushFaces={zonePaint && zoneMode === "brush" ? brushFaces : null} />
@@ -1580,7 +2223,7 @@ export default function App() {
                         glazeOn={glazeOn} glazeLayers={glazeLayers} pooling={pooling} valueMode={valueMode}
                         sprayOn={sprayActive} focus={focus} sprayColor={sprayColor}
                         orbOn={orbOn} Lorb={Lorb} orbColor={orbColor} orbInt={orbInt}
-                        zoneRamps={zoneRamps} zoneMap={zoneMap2d[model]?.[v.key]}
+                        zoneRamps={zoneRamps} zoneMap={zoneMap2d[model]?.[v.key]} zoneMetals={zoneMetals}
                         onPickRegion={zonePaint ? pickRegion(v.key) : null}
                         svgExtra="lg:max-h-[27vh]" />
                     ))}
@@ -1594,7 +2237,7 @@ export default function App() {
                           glazeOn={glazeOn} glazeLayers={glazeLayers} pooling={pooling} valueMode={valueMode}
                           sprayOn={sprayActive} focus={focus} sprayColor={sprayColor}
                           orbOn={orbOn} Lorb={Lorb} orbColor={orbColor} orbInt={orbInt}
-                          zoneRamps={zoneRamps} zoneMap={zoneMap2d[model]?.top}
+                          zoneRamps={zoneRamps} zoneMap={zoneMap2d[model]?.top} zoneMetals={zoneMetals}
                           onPickRegion={zonePaint ? pickRegion("top") : null}
                           svgExtra="lg:max-h-[15vh]" />
                       </div>
@@ -1679,6 +2322,8 @@ export default function App() {
           <p className="text-[11px] text-stone-500 mb-3 leading-snug">
             Give cloak, armor, and skin their own color schemes — all shaded by the same light.
             Pick a zone, switch on <b className="text-stone-300">Assign</b>, then click the figure to paint parts into it.
+            The <b className="text-stone-300">matte / steel / gold</b> toggle turns a zone into NMM — metal painted with
+            matte paint: harder contrast, a bright ping, sky color on up-facing planes and ground color underneath.
           </p>
           <div className="space-y-1.5 mb-3">
             {zoneNames.map((nm, zi) => (
@@ -1695,8 +2340,14 @@ export default function App() {
                   : <input value={extraZones[zi - 1].name}
                       onChange={(e) => setExtraZones((zs) => zs.map((z, k) => (k === zi - 1 ? { ...z, name: e.target.value } : z)))}
                       className="flex-1 min-w-0 bg-transparent border-b border-stone-700 text-xs text-stone-200 px-1 py-0.5" />}
+                <button onClick={() => cycleMetal(zi)}
+                  title="Cycle the zone's material: matte paint, NMM steel, NMM gold"
+                  className={"flex-none px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wider border " +
+                    (zoneMetals[zi] ? "border-amber-400/60 text-amber-300" : "border-stone-700 text-stone-500 hover:text-stone-300")}>
+                  {zoneMetals[zi] || "matte"}
+                </button>
                 <div className="flex gap-0.5 flex-none">
-                  {zoneRamps[zi].map((c, k) => <div key={k} className="w-2.5 h-5" style={{ background: c }} />)}
+                  {dispRamps[zi].map((c, k) => <div key={k} className="w-2.5 h-5" style={{ background: c }} />)}
                 </div>
               </div>
             ))}
@@ -1794,7 +2445,7 @@ export default function App() {
                 {zoneMatches.length > 1 && <div className="text-[10px] uppercase tracking-wider text-stone-500 pt-1">{zoneNames[zi]}</div>}
                 {tiers.map((t, i) => { const m = matches[i]; return m && (
                   <div key={t.key} className="flex items-center gap-2">
-                    <div className="w-5 h-5 rounded flex-none border border-black/30" style={{ background: zoneRamps[zi][i] }} title={"Your " + t.label + " — " + zoneRamps[zi][i]} />
+                    <div className="w-5 h-5 rounded flex-none border border-black/30" style={{ background: dispRamps[zi][i] }} title={"Your " + t.label + " — " + dispRamps[zi][i]} />
                     <span className="text-[10px] text-stone-500 w-16 flex-none">{t.label}</span>
                     <div className="w-5 h-5 rounded flex-none border border-black/30" style={{ background: m.hex }} title={m.hex} />
                     <div className="min-w-0 flex-1">
@@ -2151,8 +2802,8 @@ function Chooser({ ramp, L, onPick, onImport, customReady, importMsg, detail, on
         The <span style={{ color: ramp[ramp.length - 1] }}>Light</span> Bench
       </h1>
       <p className="text-stone-400 text-sm max-w-md text-center mb-8">
-        Pick a model to work on. The light, recipe, and steps work the same on any of them —
-        a color scheme you build carries across models.
+        Work on the 3D study figure, or import the actual model from your bench —
+        the light, recipe, and steps work the same on both.
       </p>
       <div className="grid grid-cols-2 gap-4 w-full max-w-xl">
         {Object.entries(MODELS).filter(([, m]) => !m.custom).map(([key, m]) => (
@@ -2186,9 +2837,9 @@ function Chooser({ ramp, L, onPick, onImport, customReady, importMsg, detail, on
           </div>
           <div className="flex items-center gap-1 mt-2" onClick={(e) => e.preventDefault()}>
             <span className="text-[10px] uppercase tracking-wider text-stone-600 mr-1">Detail</span>
-            {[["Standard", 3400], ["High", 8000], ["Ultra", 14000]].map(([lb, n]) => (
+            {[["Standard", 3400], ["High", 8000], ["Ultra", 14000], ["Full", 500000]].map(([lb, n]) => (
               <button key={n} type="button" onClick={(e) => { e.stopPropagation(); onDetail(n); }}
-                title={n.toLocaleString() + " faces max — more detail, but rotation gets heavier"}
+                title={n >= 100000 ? "The actual STL on the GPU — up to 500,000 triangles" : n.toLocaleString() + " faces max — more detail, but rotation gets heavier"}
                 className={"px-2 py-0.5 rounded-full text-[10px] border transition-colors " +
                   (detail === n ? "border-stone-300 text-stone-100 bg-stone-700/60" : "border-stone-700 text-stone-500 hover:text-stone-300")}>
                 {lb}
@@ -2199,7 +2850,7 @@ function Chooser({ ramp, L, onPick, onImport, customReady, importMsg, detail, on
         </label>
       </div>
       <p className="text-[11px] text-stone-600 mt-8 max-w-md text-center">
-        Each pose works the same — the light, recipe, and steps don't care which you pick. A fully posable figure is the planned next step.
+        Color schemes and zone materials carry over when you switch between them.
       </p>
     </div>
   );
