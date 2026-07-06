@@ -38,7 +38,10 @@ const css = readFileSync("styles.css", "utf8");
 const js  = readFileSync("app.js", "utf8");
 const extra = `
 html,body{margin:0;background:#141611;}
+body{padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);}
 input[type=range]{height:4px;}
+button,select,label,input{touch-action:manipulation;}
+@media (pointer:coarse){input[type=range]{height:28px;}}
 .controls-scroll::-webkit-scrollbar{width:8px;}
 .controls-scroll::-webkit-scrollbar-thumb{background:#3a3f31;border-radius:4px;}
 .controls-scroll{scrollbar-width:thin;scrollbar-color:#3a3f31 transparent;}
@@ -55,7 +58,7 @@ const pwa = `<link rel="manifest" href="manifest.json">` +
   `<meta name="apple-mobile-web-app-title" content="Light Bench">`;
 const swReg = `<script>if("serviceWorker"in navigator&&/^https?:$/.test(location.protocol)){addEventListener("load",()=>navigator.serviceWorker.register("sw.js").catch(()=>{}))}</script>`;
 const html = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">` +
-  `<meta name="viewport" content="width=device-width, initial-scale=1.0">` +
+  `<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">` +
   `<title>The Light Bench — Miniature Painting Tool</title>` +
   pwa +
   `<style>${css}${extra}</style></head><body><div id="root"></div><script>${js}</script>${swReg}</body></html>`;

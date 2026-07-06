@@ -1411,7 +1411,7 @@ const ModelGL = React.memo(function ModelGL({ mesh, L, ramp, mode, isoTier, tier
           {onToggleSmooth ? (
             <button onClick={onToggleSmooth}
               title={smoothShade ? "Smooth surfaces — switch to faceted plane reading" : "Faceted planes — switch to smooth surfaces"}
-              className="px-2 h-6 rounded-md border border-stone-700 hover:border-stone-500 text-[10px] text-stone-400 leading-none">
+              className="px-2 h-8 sm:h-6 rounded-md border border-stone-700 hover:border-stone-500 text-[10px] text-stone-400 leading-none">
               {smoothShade ? "smooth" : "faceted"}
             </button>
           ) : <span />}
@@ -1420,12 +1420,12 @@ const ModelGL = React.memo(function ModelGL({ mesh, L, ramp, mode, isoTier, tier
           </span>
           <span className="flex items-center gap-1 flex-none">
             <button onClick={() => setZoom((z) => clamp(z / 1.25, 0.6, 4))} aria-label="Zoom out"
-              className="w-6 h-6 rounded-md border border-stone-700 hover:border-stone-500 text-stone-400 leading-none">−</button>
+              className="w-8 h-8 sm:w-6 sm:h-6 rounded-md border border-stone-700 hover:border-stone-500 text-stone-400 leading-none">−</button>
             <button onClick={() => setZoom((z) => clamp(z * 1.25, 0.6, 4))} aria-label="Zoom in"
-              className="w-6 h-6 rounded-md border border-stone-700 hover:border-stone-500 text-stone-400 leading-none">+</button>
+              className="w-8 h-8 sm:w-6 sm:h-6 rounded-md border border-stone-700 hover:border-stone-500 text-stone-400 leading-none">+</button>
             {(zoom !== 1 || pan.x !== 0 || pan.y !== 0) && (
               <button onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }} aria-label="Reset view"
-                className="px-1.5 h-6 rounded-md border border-stone-700 hover:border-stone-500 text-[9px] text-stone-400 leading-none">reset</button>
+                className="px-1.5 h-8 sm:h-6 rounded-md border border-stone-700 hover:border-stone-500 text-[9px] text-stone-400 leading-none">reset</button>
             )}
           </span>
         </div>
@@ -1940,7 +1940,7 @@ export default function App() {
           <h1 className="text-2xl sm:text-3xl font-extrabold uppercase tracking-wide leading-none mb-1.5">
             The <span style={{ color: ramp[ramp.length - 1] }}>Light</span> Bench
           </h1>
-          <div className="flex items-center gap-2 mb-1">
+          <div className="flex items-center gap-2 mb-1 flex-wrap">
             <div className="flex items-center gap-1 flex-wrap">
               <span className="text-[9px] uppercase tracking-wider text-stone-600 mr-0.5">Extras</span>
               {[
@@ -1995,7 +1995,7 @@ export default function App() {
 
       <div className="max-w-6xl w-full mx-auto px-4 pb-4 flex-1 min-h-0 flex flex-col lg:flex-row gap-5 items-start">
           {/* ===== MODEL PANE (fits to viewport height) ===== */}
-          <div className="w-full sticky top-0 z-10 max-h-[42vh] overflow-y-auto bg-[#141611] lg:static lg:z-auto lg:max-h-none lg:bg-transparent lg:w-[36%] lg:flex-none lg:h-full controls-scroll lg:pr-1">
+          <div className="w-full sticky top-[env(safe-area-inset-top,0px)] z-10 max-h-[42vh] overflow-y-auto bg-[#141611] lg:static lg:z-auto lg:max-h-none lg:bg-transparent lg:w-[36%] lg:flex-none lg:h-full controls-scroll lg:pr-1">
             <div ref={figRef} className="relative rounded-xl border border-stone-700/60 p-3"
               style={{ background: "radial-gradient(120% 90% at 50% 0%, #20241b, #141611 75%)" }}>
               {zonePaint && (
@@ -2501,7 +2501,7 @@ export default function App() {
         <Section icon={<Save size={15} />} title="Recipes" {...sec("recipes")}>
           <div className="flex flex-wrap gap-2 items-center mb-3">
             <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Recipe name (e.g. Orc Flesh)"
-              className="flex-1 min-w-[180px] bg-stone-900 border border-stone-700 rounded-md px-3 py-2 text-sm text-stone-200 placeholder:text-stone-600" />
+              className="flex-1 min-w-[180px] bg-stone-900 border border-stone-700 rounded-md px-3 py-2 text-base sm:text-sm text-stone-200 placeholder:text-stone-600" />
             <button onClick={save} className="flex items-center gap-1.5 px-4 py-2 rounded-md text-sm bg-stone-200 text-stone-900 font-medium hover:bg-white">
               <Save size={14} /> Save
             </button>
