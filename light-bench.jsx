@@ -68,21 +68,44 @@ function tierMeta(n) {
   };
   return (m[n] || m[5]).map(([key, label]) => ({ key, label })); // fall back to 5 for bad n
 }
+// Find the HSL lightness that lands a color at a target CIE L* — HSL lightness itself
+// is not perceptually even, so we search instead of guessing.
+function hslLForLab(h, s, targetL) {
+  let lo = 0, hi = 100;
+  for (let i = 0; i < 12; i++) {
+    const mid = (lo + hi) / 2;
+    if (hexToLab(hslToHex(h, s, mid))[0] < targetL) lo = mid; else hi = mid;
+  }
+  return (lo + hi) / 2;
+}
+// Hue shift with an absolute cap: a constant fraction would swing a blue base 80°
+// toward green while barely moving a red one — temperature shifts should be gentle for everyone.
+function shiftHue(h, target, t, maxDeg) {
+  let d = (((target - h) % 360) + 540) % 360 - 180;
+  d = clamp(d * t, -maxDeg, maxDeg);
+  return ((h + d) % 360 + 360) % 360;
+}
 function generateRamp(baseHex, n) {
-  const { h, s, l } = hexToHsl(baseHex);
+  const { h, s } = hexToHsl(baseHex);
+  const Lb = hexToLab(baseHex)[0];
+  // Even perceptual (CIE L*) spacing across the whole ramp — a value ramp's entire job.
+  // Hue cools toward blue in shadow and warms toward yellow in the lights (capped);
+  // shadows gain a little saturation, highlights shed some.
+  const step = clamp((92 - Lb) / (n - 2), 9, 17);
+  // a very light base has no headroom above — give that contrast to the shadow instead
+  const deficit = Math.max(0, step * (n - 2) - Math.max(0, 96 - Lb));
   const out = new Array(n);
-  out[1] = baseHex;                                  // base
-  // shadow
-  out[0] = hslToHex(lerpHue(h, 250, 0.22), clamp(s + 7, 0, 100), clamp(l - 22, 6, 96));
-  // highlights
-  const hc = n - 2;
-  const topL = Math.min(96, l + 46);
+  out[1] = baseHex;
+  {
+    const nh = shiftHue(h, 250, 0.22, 30), ns = clamp(s + 7, 0, 100);
+    out[0] = hslToHex(nh, ns, hslLForLab(nh, ns, Math.max(8, Lb - step - deficit * 0.6)));
+  }
   for (let i = 2; i < n; i++) {
-    const frac = (i - 1) / hc;                       // 0<frac<=1
-    const nl = l + (topL - l) * frac;
-    const nh = lerpHue(h, 52, 0.12 + 0.34 * frac);
-    const ns = s - s * 0.32 * frac;
-    out[i] = hslToHex(nh, clamp(ns, 0, 100), clamp(nl, 0, 99));
+    const frac = (i - 1) / (n - 2);
+    const nh = shiftHue(h, 52, 0.12 + 0.34 * frac, 35);
+    const ns = clamp(s - s * 0.32 * frac, 0, 100);
+    const target = Math.min(96 - (n - 1 - i) * 2, Lb + step * (i - 1)); // cap near white, keep tiers separated
+    out[i] = hslToHex(nh, ns, hslLForLab(nh, ns, target));
   }
   return out;
 }
@@ -169,326 +192,13 @@ function glazeColor(b, layers, pooling) {
 }
 /* Each region: world-space surface normal [x,y,z].
    +z = front, +x = the figure's "left-view" side, +y = up. */
-const FRONT = [
-  { p: "78,22 100,14 122,22 120,38 80,38", n: [0, 0.75, 0.66] },
-  { p: "78,38 88,40 88,86 80,80", n: [-0.6, 0.05, 0.8] },
-  { p: "122,38 112,40 112,86 120,80", n: [0.6, 0.05, 0.8] },
-  { p: "88,38 112,38 112,86 88,86", n: [0, 0, 1] },
-  { p: "90,86 110,86 108,102 92,102", n: [0, 0.1, 0.99], ao: 0.5 }, // neck recess
-  { p: "62,104 138,104 142,118 58,118", n: [0, 0.82, 0.45] },
-  { p: "46,116 62,114 64,150 50,152", n: [-0.85, 0.2, 0.3] },
-  { p: "154,116 138,114 136,150 150,152", n: [0.85, 0.2, 0.3] },
-  { p: "64,120 136,120 134,138 66,138", n: [0, 0.5, 0.85], ao: 0.7 }, // hollow under the neck
-  { p: "66,138 134,138 130,176 70,176", n: [0, 0.02, 1] },
-  { p: "72,176 128,176 124,236 76,236", n: [0, 0.04, 1] },
-  { p: "46,152 64,152 62,250 50,250", n: [-0.8, 0, 0.55] },
-  { p: "154,152 136,152 138,250 150,250", n: [0.8, 0, 0.55] },
-  { p: "76,236 124,236 122,262 78,262", n: [0, 0.05, 1] },
-  { p: "78,260 99,260 99,272 80,272", n: [0, 0.6, 0.78], ao: 0.55 }, // between the legs (left)
-  { p: "101,260 122,260 120,272 101,272", n: [0, 0.6, 0.78], ao: 0.55 }, // between the legs (right)
-  { p: "80,272 99,272 98,344 84,344", n: [0, 0.03, 1] },
-  { p: "101,272 120,272 116,344 102,344", n: [0, 0.03, 1] },
-  { p: "84,348 98,348 96,436 86,436", n: [0, 0.02, 1] },
-  { p: "102,348 116,348 114,436 104,436", n: [0, 0.02, 1] },
-];
-const BACK = [
-  { p: "78,22 100,14 122,22 120,38 80,38", n: [0, 0.75, -0.66] },
-  { p: "78,38 90,38 90,86 80,80", n: [-0.55, 0.05, -0.83] },
-  { p: "122,38 110,38 110,86 120,80", n: [0.55, 0.05, -0.83] },
-  { p: "90,38 110,38 110,86 90,86", n: [0, 0, -1] },
-  { p: "90,86 110,86 108,102 92,102", n: [0, 0.1, -0.99], ao: 0.5 }, // nape recess
-  { p: "62,104 138,104 142,118 58,118", n: [0, 0.7, -0.5] },
-  { p: "46,116 62,114 64,150 50,152", n: [-0.85, 0.2, -0.3] },
-  { p: "154,116 138,114 136,150 150,152", n: [0.85, 0.2, -0.3] },
-  { p: "64,120 136,120 132,176 68,176", n: [0, 0.15, -0.97] },
-  { p: "72,176 128,176 124,236 76,236", n: [0, 0.05, -1] },
-  { p: "46,152 64,152 62,250 50,250", n: [-0.8, 0, -0.55] },
-  { p: "154,152 136,152 138,250 150,250", n: [0.8, 0, -0.55] },
-  { p: "76,236 124,236 122,272 78,272", n: [0, 0.1, -0.98] },
-  { p: "80,272 99,272 98,344 84,344", n: [0, 0.03, -1] },
-  { p: "101,272 120,272 116,344 102,344", n: [0, 0.03, -1] },
-  { p: "84,348 98,348 96,436 86,436", n: [0, 0.05, -1] },
-  { p: "102,348 116,348 114,436 104,436", n: [0, 0.05, -1] },
-];
-const LEFT = [
-  { p: "84,22 108,16 116,30 110,40 86,40", n: [0.5, 0.7, 0.1] },
-  { p: "84,40 96,40 92,82 82,78", n: [0.4, 0.05, 0.75] },
-  { p: "96,40 112,42 110,82 92,82", n: [0.95, 0.05, 0] },
-  { p: "112,42 116,52 114,80 110,82", n: [0.5, 0.05, -0.75] },
-  { p: "90,82 108,82 106,102 92,102", n: [0.9, 0.1, 0], ao: 0.5 }, // neck recess (mirrors to right)
-  { p: "78,104 124,104 126,118 76,118", n: [0.2, 0.85, 0] },
-  { p: "76,120 92,120 90,176 78,172", n: [0.4, 0.1, 0.78] },
-  { p: "92,118 122,120 120,176 90,176", n: [0.95, 0.05, 0] },
-  { p: "104,150 124,150 122,250 106,250", n: [0.9, 0, 0.1] },
-  { p: "120,140 128,150 126,176 120,176", n: [0.45, 0.05, -0.78] },
-  { p: "80,176 120,176 118,236 82,236", n: [0.92, 0.04, 0] },
-  { p: "84,236 118,236 116,262 86,262", n: [0.9, 0.05, 0] },
-  { p: "86,260 116,260 114,272 88,272", n: [0.2, 0.6, 0.1] },
-  { p: "88,272 112,272 108,344 92,344", n: [0.92, 0.03, 0] },
-  { p: "92,348 108,348 106,436 94,436", n: [0.92, 0.02, 0] },
-];
-function mirrorPoly(p) {
-  return p.split(" ").map((pt) => { const [x, y] = pt.split(","); return (200 - parseFloat(x)) + "," + y; }).join(" ");
-}
-const RIGHT = LEFT.map((r) => ({ p: mirrorPoly(r.p), n: [-r.n[0], r.n[1], r.n[2]], ao: r.ao }));
-
-const STANDING_TOP = [
-  { p: "10,78 28,72 32,96 14,100", n: [-0.8, 0.55, 0] },
-  { p: "210,78 192,72 188,96 206,100", n: [0.8, 0.55, 0] },
-  { p: "28,60 110,52 110,84 22,84", n: [-0.4, 0.8, -0.4] },
-  { p: "110,52 192,60 198,84 110,84", n: [0.4, 0.8, -0.4] },
-  { p: "22,84 110,84 110,116 28,108", n: [-0.4, 0.8, 0.4] },
-  { p: "110,84 198,84 192,108 110,116", n: [0.4, 0.8, 0.4] },
-  { p: "89,59 110,50 131,59 131,80 89,80", n: [0, 0.85, -0.4] },
-  { p: "89,80 131,80 131,101 110,110 89,101", n: [0, 0.85, 0.4] },
-  { p: "98,68 122,68 122,92 98,92", n: [0, 1, 0] },
-];
-const STANDING = [
-  { key: "front", label: "Front", regions: FRONT },
-  { key: "left", label: "Left", regions: LEFT },
-  { key: "right", label: "Right", regions: RIGHT },
-  { key: "back", label: "Back", regions: BACK },
-  { key: "top", label: "Top (from above)", regions: STANDING_TOP },
-];
 
 /* ---------------- BUST (blocky, generic) ---------------- */
-const BUST_FRONT = [
-  { p: "70,44 100,32 130,44 126,70 74,70", n: [0, 0.75, 0.66] },
-  { p: "70,70 84,72 84,150 76,140", n: [-0.6, 0.05, 0.8] },
-  { p: "130,70 116,72 116,150 124,140", n: [0.6, 0.05, 0.8] },
-  { p: "84,70 116,70 116,150 84,150", n: [0, 0, 1] },
-  { p: "86,150 114,150 112,178 88,178", n: [0, 0.1, 0.99], ao: 0.5 }, // under-chin / neck recess
-  { p: "50,180 150,180 156,200 44,200", n: [0, 0.82, 0.45] },
-  { p: "30,196 50,194 52,250 36,254", n: [-0.85, 0.2, 0.3] },
-  { p: "170,196 150,194 148,250 164,254", n: [0.85, 0.2, 0.3] },
-  { p: "52,204 148,204 146,228 54,228", n: [0, 0.5, 0.85], ao: 0.7 }, // neck-to-chest hollow
-  { p: "54,228 146,228 142,300 58,300", n: [0, 0.02, 1] },
-  { p: "62,300 138,300 132,344 68,344", n: [0, 0.05, 1] },
-  { p: "58,346 142,346 140,358 60,358", n: [0, 0.7, 0.55] },
-  { p: "60,358 140,358 150,404 50,404", n: [0, 0.08, 1] },
-];
-const BUST_BACK = [
-  { p: "70,44 100,32 130,44 126,70 74,70", n: [0, 0.75, -0.66] },
-  { p: "70,70 84,72 84,150 76,140", n: [-0.55, 0.05, -0.83] },
-  { p: "130,70 116,72 116,150 124,140", n: [0.55, 0.05, -0.83] },
-  { p: "84,70 116,70 116,150 84,150", n: [0, 0, -1] },
-  { p: "86,150 114,150 112,178 88,178", n: [0, 0.1, -0.99], ao: 0.5 }, // nape recess
-  { p: "50,180 150,180 156,200 44,200", n: [0, 0.7, -0.5] },
-  { p: "30,196 50,194 52,250 36,254", n: [-0.85, 0.2, -0.3] },
-  { p: "170,196 150,194 148,250 164,254", n: [0.85, 0.2, -0.3] },
-  { p: "52,204 148,204 146,228 54,228", n: [0, 0.3, -0.9], ao: 0.7 }, // upper-back hollow under neck
-  { p: "54,228 146,228 142,300 58,300", n: [0, 0.05, -1] },
-  { p: "62,300 138,300 132,344 68,344", n: [0, 0.05, -1] },
-  { p: "58,346 142,346 140,358 60,358", n: [0, 0.7, -0.55] },
-  { p: "60,358 140,358 150,404 50,404", n: [0, 0.08, -1] },
-];
-const BUST_LEFT = [
-  { p: "84,44 112,36 120,56 112,68 86,66", n: [0.4, 0.7, 0.1] },
-  { p: "84,66 96,66 92,144 82,138", n: [0.4, 0.05, 0.75] },
-  { p: "96,66 114,68 112,144 92,144", n: [0.95, 0.05, 0] },
-  { p: "114,68 120,80 116,142 112,144", n: [0.5, 0.05, -0.75] },
-  { p: "88,144 112,144 110,178 90,178", n: [0.9, 0.1, 0], ao: 0.5 }, // neck recess (mirrors to right)
-  { p: "70,180 134,180 138,202 66,202", n: [0.2, 0.85, 0] },
-  { p: "66,206 86,206 84,300 70,294", n: [0.4, 0.1, 0.78] },
-  { p: "86,204 132,206 130,300 84,300", n: [0.95, 0.05, 0] },
-  { p: "130,210 140,220 136,300 130,300", n: [0.45, 0.05, -0.78] },
-  { p: "72,300 132,300 128,344 76,344", n: [0.9, 0.05, 0] },
-  { p: "66,346 140,346 138,358 68,358", n: [0.2, 0.65, 0.1] },
-  { p: "68,358 140,358 148,404 60,404", n: [0.9, 0.06, 0] },
-];
-const BUST_RIGHT = BUST_LEFT.map((r) => ({ p: mirrorPoly(r.p), n: [-r.n[0], r.n[1], r.n[2]], ao: r.ao }));
-const BUST_TOP = [
-  { p: "40,60 110,52 110,84 34,84", n: [-0.35, 0.8, -0.4] },
-  { p: "110,52 180,60 186,84 110,84", n: [0.35, 0.8, -0.4] },
-  { p: "34,84 110,84 110,116 40,108", n: [-0.35, 0.8, 0.4] },
-  { p: "110,84 186,84 180,108 110,116", n: [0.35, 0.8, 0.4] },
-  { p: "89,59 110,50 131,59 131,80 89,80", n: [0, 0.85, -0.4] },
-  { p: "89,80 131,80 131,101 110,110 89,101", n: [0, 0.85, 0.4] },
-  { p: "98,68 122,68 122,92 98,92", n: [0, 1, 0] },
-];
-const BUST = [
-  { key: "front", label: "Front", regions: BUST_FRONT },
-  { key: "left", label: "Left", regions: BUST_LEFT },
-  { key: "right", label: "Right", regions: BUST_RIGHT },
-  { key: "back", label: "Back", regions: BUST_BACK },
-  { key: "top", label: "Top (from above)", regions: BUST_TOP },
-];
-
-/* ---------------- RIFLE STANCE (arms raised, rifle held at an angle) ---------------- */
-const GUN_FRONT = [
-  { p: "78,22 100,14 122,22 120,38 80,38", n: [0, 0.75, 0.66] },
-  { p: "78,38 88,40 88,86 80,80", n: [-0.6, 0.05, 0.8] },
-  { p: "122,38 112,40 112,86 120,80", n: [0.6, 0.05, 0.8] },
-  { p: "88,38 112,38 112,86 88,86", n: [0, 0, 1] },
-  { p: "90,86 110,86 108,102 92,102", n: [0, 0.1, 0.99], ao: 0.5 }, // neck recess
-  { p: "62,104 138,104 142,118 58,118", n: [0, 0.82, 0.45] },
-  { p: "64,118 136,118 134,150 66,150", n: [0, 0.3, 0.95], ao: 0.7 }, // chest hollow under the neck/arms
-  { p: "66,150 134,150 130,238 70,238", n: [0, 0.04, 1] },
-  { p: "74,238 126,238 122,266 78,266", n: [0, 0.05, 1] },
-  { p: "80,266 100,266 88,330 68,330", n: [0, 0.04, 1] },
-  { p: "68,330 88,330 92,414 76,418", n: [0, 0.03, 1] },
-  { p: "104,266 124,266 122,336 110,336", n: [0, 0.04, 1] },
-  { p: "110,340 124,340 124,432 112,432", n: [0, 0.03, 1] },
-  { p: "50,120 66,122 64,160 50,160", n: [-0.72, 0.15, 0.45] },
-  { p: "62,156 96,176 90,190 56,170", n: [-0.2, 0.1, 0.9] },
-  { p: "134,122 150,120 150,158 134,156", n: [0.72, 0.15, 0.45] },
-  { p: "148,156 126,166 132,178 150,170", n: [0.2, 0.1, 0.9] },
-  { p: "58,198 70,192 74,200 62,206", n: [0, 0.3, 0.8] },
-  { p: "70,194 76,204 176,156 170,146", n: [0, 0.5, 0.72] },
-  { p: "76,204 176,156 178,166 78,214", n: [0, 0.12, 0.98] },
-  { p: "88,178 100,172 106,182 94,190", n: [0, 0.15, 0.95] },
-  { p: "124,164 136,158 142,168 130,176", n: [0, 0.15, 0.95] },
-];
-const GUN_BACK = [
-  { p: "78,22 100,14 122,22 120,38 80,38", n: [0, 0.75, -0.66] },
-  { p: "78,38 90,38 90,86 80,80", n: [-0.55, 0.05, -0.83] },
-  { p: "122,38 110,38 110,86 120,80", n: [0.55, 0.05, -0.83] },
-  { p: "90,38 110,38 110,86 90,86", n: [0, 0, -1] },
-  { p: "90,86 110,86 108,102 92,102", n: [0, 0.1, -0.99], ao: 0.5 }, // nape recess
-  { p: "62,104 138,104 142,118 58,118", n: [0, 0.7, -0.5] },
-  { p: "64,118 136,118 134,150 66,150", n: [0, 0.15, -0.95] },
-  { p: "66,150 134,150 130,238 70,238", n: [0, 0.05, -1] },
-  { p: "74,238 126,238 122,266 78,266", n: [0, 0.1, -0.98] },
-  { p: "80,266 100,266 88,330 68,330", n: [0, 0.04, -1] },
-  { p: "68,330 88,330 92,414 76,418", n: [0, 0.03, -1] },
-  { p: "104,266 124,266 122,336 110,336", n: [0, 0.04, -1] },
-  { p: "110,340 124,340 124,432 112,432", n: [0, 0.03, -1] },
-  { p: "50,120 66,122 64,160 50,160", n: [-0.72, 0.15, -0.45] },
-  { p: "134,122 150,120 150,158 134,156", n: [0.72, 0.15, -0.45] },
-  { p: "56,156 70,162 66,182 52,174", n: [-0.3, 0.1, -0.6] },
-  { p: "144,158 130,164 134,182 148,174", n: [0.3, 0.1, -0.6] },
-  { p: "170,150 182,146 184,156 172,160", n: [0.4, 0.3, -0.4] },
-  { p: "58,196 70,192 73,200 61,206", n: [-0.2, 0.2, -0.6] },
-];
-const GUN_LEFT = [
-  { p: "84,22 108,16 116,30 110,40 86,40", n: [0.5, 0.7, 0.1] },
-  { p: "84,40 96,40 92,82 82,78", n: [0.4, 0.05, 0.75] },
-  { p: "96,40 112,42 110,82 92,82", n: [0.95, 0.05, 0] },
-  { p: "112,42 116,52 114,80 110,82", n: [0.5, 0.05, -0.75] },
-  { p: "90,82 108,82 106,102 92,102", n: [0.9, 0.1, 0], ao: 0.5 }, // neck recess (mirrors to right)
-  { p: "78,104 124,104 126,118 76,118", n: [0.2, 0.85, 0] },
-  { p: "76,120 92,120 90,168 78,164", n: [0.4, 0.1, 0.78] },
-  { p: "92,118 120,120 118,202 90,202", n: [0.95, 0.05, 0] },
-  { p: "118,134 126,144 124,202 118,202", n: [0.45, 0.05, -0.78] },
-  { p: "80,202 118,202 116,252 82,252", n: [0.92, 0.04, 0] },
-  { p: "82,252 116,252 114,282 86,282", n: [0.9, 0.05, 0] },
-  { p: "100,282 116,282 118,344 106,344", n: [0.9, 0.04, -0.2] },
-  { p: "106,348 118,344 122,430 112,432", n: [0.9, 0.03, -0.15] },
-  { p: "106,428 128,426 130,440 104,442", n: [0.3, 0.3, -0.4] },
-  { p: "82,282 104,278 100,300 80,306", n: [0.6, 0.3, 0.5] },
-  { p: "80,300 100,300 96,420 76,420", n: [0.88, 0.03, 0.1] },
-  { p: "60,416 96,414 98,430 58,432", n: [0.35, 0.3, 0.5] },
-  { p: "84,124 102,122 104,150 86,154", n: [0.6, 0.15, 0.5] },
-  { p: "60,148 102,142 104,156 62,164", n: [0.4, 0.05, 0.8] },
-  { p: "34,148 100,140 102,154 36,162", n: [0.6, 0.35, 0.12] },
-  { p: "98,146 112,144 112,158 98,160", n: [0.7, 0.2, -0.15] },
-  { p: "46,148 60,144 64,156 50,160", n: [0.5, 0.2, 0.4] },
-  { p: "86,148 100,144 102,156 88,160", n: [0.5, 0.2, 0.2] },
-];
-const GUN_RIGHT = GUN_LEFT.map((r) => ({ p: mirrorPoly(r.p), n: [-r.n[0], r.n[1], r.n[2]], ao: r.ao }));
-const GUN_TOP = [
-  { p: "40,54 110,48 110,76 34,76", n: [-0.35, 0.8, -0.4] },
-  { p: "110,48 180,54 186,76 110,76", n: [0.35, 0.8, -0.4] },
-  { p: "34,76 110,76 110,96 40,92", n: [-0.35, 0.8, 0.4] },
-  { p: "110,76 186,76 180,96 110,96", n: [0.35, 0.8, 0.4] },
-  { p: "54,92 78,90 86,116 64,120", n: [-0.3, 0.7, 0.45] },
-  { p: "166,92 142,90 134,116 156,120", n: [0.3, 0.7, 0.45] },
-  { p: "30,116 190,108 192,122 32,130", n: [0, 0.72, 0.4] },
-  { p: "90,50 110,42 130,50 130,68 90,68", n: [0, 0.85, -0.4] },
-  { p: "90,68 130,68 130,80 110,86 90,80", n: [0, 0.85, 0.4] },
-  { p: "100,56 120,56 120,72 100,72", n: [0, 1, 0] },
-];
-const GUN = [
-  { key: "front", label: "Front", regions: GUN_FRONT },
-  { key: "left", label: "Left", regions: GUN_LEFT },
-  { key: "right", label: "Right", regions: GUN_RIGHT },
-  { key: "back", label: "Back", regions: GUN_BACK },
-  { key: "top", label: "Top (from above)", regions: GUN_TOP },
-];
-
-/* ---------------- DUAL WIELD (arms wide, pistol raised + blade out) ---------------- */
-const DUAL_FRONT = [
-  { p: "80,30 100,22 120,30 118,52 82,52", n: [0, 0.75, 0.66] },
-  { p: "80,52 90,54 90,96 82,90", n: [-0.6, 0.05, 0.8] },
-  { p: "120,52 110,54 110,96 118,90", n: [0.6, 0.05, 0.8] },
-  { p: "90,52 110,52 110,96 90,96", n: [0, 0, 1] },
-  { p: "92,96 108,96 106,110 94,110", n: [0, 0.1, 0.99] },
-  { p: "64,112 136,112 140,128 60,128", n: [0, 0.82, 0.45] },
-  { p: "38,110 64,108 66,142 36,146", n: [-0.7, 0.3, 0.4] },
-  { p: "162,110 136,108 134,142 164,146", n: [0.7, 0.3, 0.4] },
-  { p: "62,128 138,128 132,210 68,210", n: [0, 0.03, 1] },
-  { p: "68,210 132,210 128,250 72,250", n: [0, 0.04, 1] },
-  { p: "72,250 128,250 126,278 74,278", n: [0, 0.05, 1] },
-  { p: "74,278 98,278 86,346 64,344", n: [0, 0.04, 1] },
-  { p: "64,346 86,344 92,430 72,432", n: [0, 0.03, 1] },
-  { p: "54,428 92,426 94,442 52,444", n: [0.2, 0.3, 0.5] },
-  { p: "102,278 126,278 136,344 116,344", n: [0, 0.04, 1] },
-  { p: "116,348 136,344 140,430 122,432", n: [0, 0.03, 1] },
-  { p: "112,428 150,426 152,442 110,444", n: [0.2, 0.3, -0.3] },
-  { p: "44,124 60,130 42,110 30,116", n: [-0.6, 0.25, 0.55] },
-  { p: "30,116 42,110 32,74 18,80", n: [-0.5, 0.15, 0.7] },
-  { p: "12,78 36,76 38,92 14,94", n: [0, 0.4, 0.9] },
-  { p: "16,40 30,38 34,78 20,80", n: [-0.2, 0.35, 0.85] },
-  { p: "12,52 22,50 24,64 14,66", n: [-0.4, 0.2, 0.78] },
-  { p: "140,128 156,124 178,144 164,150", n: [0.6, 0.2, 0.5] },
-  { p: "164,148 178,144 192,158 178,164", n: [0.5, 0.1, 0.7] },
-  { p: "178,158 192,156 196,170 182,174", n: [0.3, 0.1, 0.8] },
-  { p: "179,160 197,158 198,168 181,170", n: [0.2, 0.2, 0.7] },
-  { p: "185,158 193,156 199,82 192,82", n: [0.3, 0.4, 0.55] },
-];
-const DUAL_BACK = DUAL_FRONT.map((r) => ({ p: mirrorPoly(r.p), n: [-r.n[0], r.n[1], -r.n[2]] }));
-const DUAL_LEFT = [
-  { p: "84,30 108,24 116,38 110,50 86,50", n: [0.5, 0.7, 0.1] },
-  { p: "84,50 96,50 92,96 82,90", n: [0.4, 0.05, 0.75] },
-  { p: "96,50 112,52 110,96 92,96", n: [0.95, 0.05, 0] },
-  { p: "112,52 116,62 114,94 110,96", n: [0.5, 0.05, -0.75] },
-  { p: "90,96 108,96 106,112 92,112", n: [0.9, 0.1, 0] },
-  { p: "76,108 110,106 112,140 74,142", n: [0.3, 0.5, 0.2] },
-  { p: "84,112 116,112 118,124 82,124", n: [0.2, 0.82, 0] },
-  { p: "80,124 96,124 94,200 82,196", n: [0.4, 0.1, 0.78] },
-  { p: "96,122 120,124 118,205 94,205", n: [0.95, 0.05, 0] },
-  { p: "118,136 126,146 124,205 118,205", n: [0.45, 0.05, -0.78] },
-  { p: "84,205 118,205 116,252 86,252", n: [0.9, 0.04, 0] },
-  { p: "86,252 116,252 114,282 90,282", n: [0.9, 0.05, 0] },
-  { p: "100,282 116,282 118,340 106,340", n: [0.9, 0.04, -0.2] },
-  { p: "106,344 118,340 122,428 112,430", n: [0.9, 0.03, -0.15] },
-  { p: "106,426 128,424 130,438 104,440", n: [0.3, 0.3, -0.4] },
-  { p: "86,282 108,280 100,332 80,330", n: [0.85, 0.04, 0.25] },
-  { p: "80,332 100,330 96,420 78,422", n: [0.88, 0.03, 0.12] },
-  { p: "62,418 96,414 98,430 60,432", n: [0.3, 0.3, 0.5] },
-  { p: "84,124 100,122 94,98 78,102", n: [0.4, 0.4, 0.5] },
-  { p: "78,102 94,98 88,60 72,64", n: [0.3, 0.25, 0.7] },
-  { p: "70,32 84,30 88,64 74,66", n: [0.2, 0.4, 0.6] },
-  { p: "94,150 116,148 114,174 92,176", n: [0.5, 0.1, 0.6] },
-  { p: "110,160 152,140 156,152 114,172", n: [0.4, 0.35, 0.5] },
-];
-const DUAL_RIGHT = DUAL_LEFT.map((r) => ({ p: mirrorPoly(r.p), n: [-r.n[0], r.n[1], r.n[2]] }));
-const DUAL_TOP = [
-  { p: "70,60 150,60 156,96 64,96", n: [0, 1, 0] },
-  { p: "96,66 124,66 122,92 98,92", n: [0, 1, 0.05] },
-  { p: "98,52 122,52 120,72 100,72", n: [0, 0.98, 0.15] },
-  { p: "44,70 70,66 72,86 46,90", n: [-0.4, 0.85, 0.1] },
-  { p: "150,70 176,66 174,90 148,86", n: [0.4, 0.85, 0.1] },
-  { p: "30,72 56,68 58,82 32,86", n: [-0.6, 0.6, 0.2] },
-  { p: "10,70 32,66 34,82 12,86", n: [-0.7, 0.55, 0.2] },
-  { p: "164,72 190,68 192,82 166,86", n: [0.6, 0.6, 0.2] },
-  { p: "188,74 214,72 216,82 190,84", n: [0.7, 0.5, 0.2] },
-];
-const DUAL = [
-  { key: "front", label: "Front", regions: DUAL_FRONT },
-  { key: "left", label: "Left", regions: DUAL_LEFT },
-  { key: "right", label: "Right", regions: DUAL_RIGHT },
-  { key: "back", label: "Back", regions: DUAL_BACK },
-  { key: "top", label: "Top (from above)", regions: DUAL_TOP },
-];
 
 const MODELS = {
-  // The 2D croquis models were retired once full-detail STL rendering landed —
-  // their view data (STANDING etc.) stays as the generic preview geometry.
   male: { label: "3D figure", blurb: "A realistic figure you rotate in 3D — drag to read light across real anatomy.", only3d: true },
   custom: { label: "Imported model", blurb: "Your own STL or OBJ, simplified so the planes read clearly.", only3d: true, custom: true },
 };
-const frontOf = (views) => views.find((v) => v.key === "front").regions;
 
 /* ============================== LIGHTING ============================== */
 function lightVector(azDeg, elDeg) {
@@ -496,12 +206,12 @@ function lightVector(azDeg, elDeg) {
   const ce = Math.cos(e);
   return [ce * Math.sin(a), Math.sin(e), ce * Math.cos(a)];
 }
-function brightness(normal, L, ao = 1) {
+function brightness(normal, L, ao = 1, intensity = 1) {
   const d = normal[0] * L[0] + normal[1] * L[1] + normal[2] * L[2];
   // ambient floor + directional, then ambient occlusion: a recessed plane (ao→0) loses
   // its ambient/bounce light fully and part of the direct light, so valleys read dark
   // regardless of how they happen to face the light — "shadow gathers in the recesses".
-  return 0.05 * ao + 0.95 * smoothstep(-0.3, 1, d) * (0.5 + 0.5 * ao);
+  return 0.05 * ao + 0.95 * intensity * smoothstep(-0.3, 1, d) * (0.5 + 0.5 * ao);
 }
 // How much spray lands on a plane — airbrush mode reuses the light vector as the nozzle aim.
 // No ambient floor: planes facing away get NO paint (stay bare primer), the lesson the soft
@@ -527,39 +237,46 @@ function orbGlow(fill, normal, Lorb, orbColor, orbInt) {
 function tierIndex(b, n) { return clamp(Math.round(b * (n - 1)), 0, n - 1); }
 
 /* ============================== SEQUENCER ============================== */
-function buildStages(n, method = "brush") {
+function buildStages(n, method = "brush", zenithal = false, lit = true) {
   const air = method === "airbrush"; // brush/airbrush swap the copy; id/mode/iso stay identical
-  const has = (k) => tierMeta(n).some((t) => t.key === k);
+  const has = (k) => lit && tierMeta(n).some((t) => t.key === k);
   const s = [
-    { id: "prime", name: "Prime black", mode: "prime", iso: null,
+    { id: "prime", name: "Prime", mode: "prime", iso: null,
       note: air
-        ? "Airbrush thinned black primer in light passes at low pressure (~15–20 PSI). This is your deepest shadow — everything builds from here."
-        : "Thin, even coat of black primer. This is your deepest shadow — everything builds up from here.",
+        ? "Airbrush thinned primer in light passes at low pressure (~15–20 PSI). Any color works — dark primers forgive gaps and mute the scheme, light ones brighten it but show every miss."
+        : "Thin, even coat of primer. Any color works — dark primers forgive gaps and mute the scheme, light ones brighten it but show every miss. Pick yours below to preview it.",
       watch: air
         ? "Too close or too wet and it pools and spiders. Back off to about a hand's width and build it in thin passes."
         : "Don't flood it. Heavy primer fills detail and hides the sculpt. Several light passes beat one wet one." },
+  ];
+  if (zenithal) s.push(
     { id: "zenithal", name: "Zenithal", mode: "zenithal", iso: null,
       note: air
         ? "Spray white from straight overhead in soft passes — pre-baking the light map, tops bright and undersides dark. This step was always an airbrush job."
         : "Spray white from straight above. You're pre-baking the light map — tops bright, undersides dark.",
       watch: air
         ? "Keep the nozzle strictly overhead. Drift to the side and your sprayed shading won't match where light actually falls."
-        : "Keep the light strictly overhead. Angle it and your free shading no longer matches where light actually falls." },
-    { id: "base", name: "Base coat", mode: "paint", iso: null,
-      note: air
-        ? "Thin the base to milk and lay angled passes from slightly above, letting the zenithal value glow through."
-        : "Lay the midtone over everything, thin enough to let the zenithal value show through. This is the whole scheme before you isolate the lights and darks.",
-      watch: air
-        ? "Paint too thick or pressure too high goes chalky and buries the zenithal. Thin it more and build more passes."
-        : "Opaque here buries the zenithal. If you go solid, you've signed up to rebuild all the shading by hand." },
-    { id: "shade", name: "Shade", mode: "paint", iso: "shadow",
+        : "Keep the light strictly overhead. Angle it and your free shading no longer matches where light actually falls." });
+  s.push(zenithal
+    ? { id: "base", name: "Base coat", mode: "paint", iso: null,
+        note: air
+          ? "Thin each material's base to milk and lay angled passes from slightly above, letting the zenithal value glow through."
+          : "Lay each material's midtone thin enough to let the zenithal value show through. This is the whole scheme before you isolate the lights and darks.",
+        watch: air
+          ? "Paint too thick or pressure too high goes chalky and buries the zenithal. Thin it more and build more passes."
+          : "Opaque here buries the zenithal. If you go solid, you've signed up to rebuild all the shading by hand." }
+    : { id: "base", name: "Base coats", mode: "paint", iso: null,
+        note: air
+          ? "Each material gets its flat base color — thin passes to solid, even coverage. Shield neighbouring materials from overspray."
+          : "Each material gets its flat, solid base color — two or three thin coats, never one heavy one. Work inside-out and bottom-up: skin before the collar over it, under-layers before what overlaps them.",
+        watch: "It will look flat and toy-like when every base is down. That's correct — depth comes from the next steps." });
+  if (lit) s.push({ id: "shade", name: "Shade", mode: "paint", iso: "shadow",
       note: air
         ? "Drop the spray angle: thinned shadow color low and from the side, so the cone only catches the undersides and recesses."
         : "Push your shadow into the recesses — a thin all-over wash settles into them on its own, or glaze it in deliberately where you want more control.",
       watch: air
         ? "Spray straight-on and shadow lands everywhere. Lower the angle so the raised planes stay clean."
-        : "Keep it in the valleys. Shadow creeping onto raised planes flattens the whole figure." },
-  ];
+        : "Keep it in the valleys. Shadow creeping onto raised planes flattens the whole figure." });
   if (has("mid")) s.push({ id: "mid", name: "Midtone highlight", mode: "paint", iso: "mid",
     note: air
       ? "Raise the angle back toward overhead so only the broad upper faces catch the pass."
@@ -567,7 +284,7 @@ function buildStages(n, method = "brush") {
     watch: air
       ? "Ease off the pressure and stay above — overspray drifting down flattens the highlight."
       : "This layer is broad. Resist going bright yet — that's the next step's job." });
-  s.push({ id: "top", name: "Highlight", mode: "paint", iso: "top",
+  if (lit) s.push({ id: "top", name: "Highlight", mode: "paint", iso: "top",
     note: air
       ? "Steep, near-overhead passes with a thinned highlight mix — only the planes facing the light most directly."
       : "Brighter, warmer highlight on the top planes — only what faces the light most directly.",
@@ -598,57 +315,6 @@ function buildStages(n, method = "brush") {
 
 /* ============================== FIGURE VIEW ============================== */
 // Centroid of a "x,y x,y …" polygon — used to place the light marker.
-function centroid(pts) {
-  const pairs = pts.trim().split(/\s+/).map((p) => p.split(",").map(Number));
-  const n = pairs.length || 1;
-  return [pairs.reduce((a, p) => a + p[0], 0) / n, pairs.reduce((a, p) => a + p[1], 0) / n];
-}
-const FigureView = React.memo(function FigureView({ label, regions, L, ramp, mode, isoTier, tierKeys, glazeOn, glazeLayers, pooling, valueMode, sprayOn = false, focus = 0.5, sprayColor = "#cfe3ef", orbOn = false, Lorb = null, orbColor = "#3fb8ff", orbInt = 0.5, viewBox = "0 0 200 460", svgExtra = "", zoneRamps = null, zoneMap = null, zoneMetals = null, onPickRegion = null }) {
-  // The facet facing the light most directly is just the max of b = dot(normal, light);
-  // marking it makes the whole shading model legible at a glance.
-  const bs = regions.map((r) => brightness(r.n, L, r.ao));
-  let maxI = 0; for (let i = 1; i < bs.length; i++) if (bs[i] > bs[maxI]) maxI = i;
-  const [sunX, sunY] = centroid(regions[maxI].p);
-  return (
-    <div className="flex flex-col items-center min-w-0">
-      <svg viewBox={viewBox} preserveAspectRatio="xMidYMid meet" className={"w-full h-auto " + svgExtra}>
-        {regions.map((r, i) => {
-          const b = bs[i];
-          // each region shades from its zone's ramp (zone 0 = the main ramp)
-          const zi = (zoneMap && zoneMap[i]) || 0;
-          const zr = (zoneRamps && (zoneRamps[zi] || zoneRamps[0])) || ramp;
-          const met = zoneMetals && zoneMetals[zi];
-          const idx = tierIndex(b, zr.length);
-          let fill, dim = isoTier != null && tierKeys[idx] !== isoTier;
-          if (sprayOn) { fill = mix("#33322d", sprayColor, sprayCoverage(r.n, L, focus)); dim = false; } // coverage, not value
-          else if (mode === "prime") fill = "#1b1b1b";
-          else if (mode === "zenithal") fill = valueGrey(b);
-          else if (glazeOn) fill = glazeColor(b, glazeLayers, pooling);
-          else if (met) fill = nmmColor(met, b, r.n); // NMM zone: metal shading, not the tier ramp
-          else fill = zr[idx];
-          if (valueMode && mode === "paint" && !sprayOn) fill = valueGreyOf(fill); // squint test: show value, not hue
-          if (orbOn && Lorb && !sprayOn) fill = orbGlow(fill, r.n, Lorb, orbColor, orbInt); // object-source glow adds on top
-          return (
-            <polygon key={i} points={r.p} fill={fill}
-              opacity={dim ? 0.12 : 1}
-              onClick={onPickRegion ? () => onPickRegion(i) : undefined}
-              style={onPickRegion ? { cursor: "crosshair" } : undefined}
-              stroke="#00000033" strokeWidth="0.6" strokeLinejoin="round" />
-          );
-        })}
-        {mode !== "prime" && (
-          /* light hotspot: a soft amber glow over the facet that faces the light most */
-          <g pointerEvents="none">
-            <circle cx={sunX} cy={sunY} r="7" fill="#fde68a" opacity="0.16" />
-            <circle cx={sunX} cy={sunY} r="3.6" fill="#fde68a" opacity="0.34" />
-            <circle cx={sunX} cy={sunY} r="1.8" fill="#fff6da" stroke="#9a7724" strokeWidth="0.5" />
-          </g>
-        )}
-      </svg>
-      <div className="mt-1 text-[10px] tracking-[0.25em] uppercase text-stone-400">{label}</div>
-    </div>
-  );
-});
 
 /* ============================== 3D MODEL (no libraries) ==============================
    A blocky figure is a list of quad faces in world space (+x right, +y up, +z front).
@@ -755,31 +421,6 @@ function buildMeshIndexed(verts, faceIdx) { return buildMesh(faceIdx.map((f) => 
 /* ---- Zone patch fill: expand a clicked face across shared edges while the surface
         stays smooth (normal deviation < ~45°), so one click grabs a whole cloak/armor
         plate on a dense imported mesh without bleeding around hard edges. ---- */
-function meshAdjacency(mesh) {
-  if (mesh._adj) return mesh._adj;
-  const key = (p) => p[0].toFixed(1) + "," + p[1].toFixed(1) + "," + p[2].toFixed(1);
-  const edgeMap = new Map(), adj = mesh.faces.map(() => []);
-  mesh.faces.forEach((f, i) => {
-    for (let a = 0; a < f.length; a++) {
-      const k1 = key(f[a]), k2 = key(f[(a + 1) % f.length]);
-      const ek = k1 < k2 ? k1 + "|" + k2 : k2 + "|" + k1;
-      const other = edgeMap.get(ek);
-      if (other !== undefined && other !== i) { adj[i].push(other); adj[other].push(i); }
-      else edgeMap.set(ek, i);
-    }
-  });
-  return (mesh._adj = adj);
-}
-function zonePatch(mesh, start, maxFaces = 1500) {
-  const adj = meshAdjacency(mesh), norms = mesh.normals;
-  const out = [start], seen = new Set(out);
-  for (let q = 0; q < out.length && out.length < maxFaces; q++) {
-    for (const j of adj[out[q]]) {
-      if (!seen.has(j) && dot3(norms[out[q]], norms[j]) > 0.72) { seen.add(j); out.push(j); }
-    }
-  }
-  return out;
-}
 
 /* ---- Import your own model (STL/OBJ) — parse, normalize, decimate in-browser. ---- */
 // Binary or ASCII STL -> triangle soup (verts get welded by the decimator's clustering).
@@ -1075,7 +716,7 @@ const MESH3D = new Proxy(meshCache, {
 // Canvas renderer — fast enough for the decimated scan (~2-3k faces) where SVG would choke.
 // Same engine: world-space normal -> light -> tier color, flat-shaded; painter's sort + cull;
 // mild perspective; drag to orbit (light fixed in world). noDrag renders a static thumbnail.
-const Model3DCanvas = React.memo(function Model3DCanvas({ mesh, L, ramp, mode, isoTier, tierKeys, glazeOn, glazeLayers, pooling, valueMode, sprayOn = false, focus = 0.5, sprayColor = "#cfe3ef", orbOn = false, Lorb = null, orbColor = "#3fb8ff", orbInt = 0.5, noDrag, initRot, zoneRamps = null, zoneMap = null, zoneMetals = null, zoneVer = 0, onPickFace = null, brushSize = 0, onBrushFaces = null }) {
+const Model3DCanvas = React.memo(function Model3DCanvas({ mesh, L, ramp, mode, isoTier, tierKeys, glazeOn, glazeLayers, pooling, valueMode, sprayOn = false, focus = 0.5, sprayColor = "#cfe3ef", orbOn = false, Lorb = null, orbColor = "#3fb8ff", orbInt = 0.5, noDrag, initRot, zoneRamps = null, zoneMap = null, zoneMetals = null, zoneVer = 0, onPickFace = null, brushSize = 0, onBrushFaces = null, onStrokeEnd = null, rimOn = false, Lrim = null, rimColor = "#9fc8ff", rimInt = 0.4, primerColor = "#1b1b1b", lightOn = true, lightInt = 1 }) {
   const [rot, setRot] = useState(initRot || { yaw: -0.5, pitch: 0.12 });
   const [zoom, setZoom] = useState(1);
   const ringRef = useRef(null);
@@ -1098,7 +739,7 @@ const Model3DCanvas = React.memo(function Model3DCanvas({ mesh, L, ramp, mode, i
   };
   const onDown = (e) => {
     if (noDrag) return;
-    if (onBrushFaces && brushSize > 0) { drag.current = { painting: true }; e.currentTarget.setPointerCapture?.(e.pointerId); brushAt(e); return; }
+    if (onBrushFaces && brushSize > 0 && e.button === 0) { drag.current = { painting: true }; e.currentTarget.setPointerCapture?.(e.pointerId); brushAt(e); return; }
     drag.current = { x: e.clientX, y: e.clientY, moved: false, ...rot }; e.currentTarget.setPointerCapture?.(e.pointerId);
   };
   const raf = useRef(0), pendingRot = useRef(null);
@@ -1122,7 +763,8 @@ const Model3DCanvas = React.memo(function Model3DCanvas({ mesh, L, ramp, mode, i
     const wasClick = drag.current && !drag.current.painting && !drag.current.moved;
     drag.current = null; e.currentTarget.releasePointerCapture?.(e.pointerId);
     if (e.type === "pointerleave" && ringRef.current) ringRef.current.style.display = "none";
-    if (wasPainting || !wasClick || !onPickFace) return;
+    if (wasPainting) { onStrokeEnd && onStrokeEnd(); return; }
+    if (!wasClick || !onPickFace) return;
     // click (not a drag): pick the frontmost face under the cursor
     const cnv = canvasRef.current, r = cnv.getBoundingClientRect();
     const px = ((e.clientX - r.left) / r.width) * cnv.width, py = ((e.clientY - r.top) / r.height) * cnv.height;
@@ -1148,7 +790,7 @@ const Model3DCanvas = React.memo(function Model3DCanvas({ mesh, L, ramp, mode, i
   }, [noDrag]);
 
   // Brightness depends on light + mesh only — not rotation — so cache it across drag frames.
-  const brights = useMemo(() => mesh.faces.map((f, i) => brightness(mesh.normals[i], L, mesh.ao[i])), [mesh, L]);
+  const brights = useMemo(() => mesh.faces.map((f, i) => brightness(mesh.normals[i], L, mesh.ao[i], lightInt)), [mesh, L, lightInt]);
 
   useEffect(() => {
     const cnv = canvasRef.current; if (!cnv) return;
@@ -1167,7 +809,7 @@ const Model3DCanvas = React.memo(function Model3DCanvas({ mesh, L, ramp, mode, i
       const cn = rotAll(normals[i]);
       if (cn[2] <= 0.001) continue; // backface cull before doing any more work
       const cv = mf[i].map(cam);
-      vis.push({ i, n: normals[i], cv, depth: cv.reduce((a, v) => a + v[2], 0) / cv.length, b: brights[i] });
+      vis.push({ i, n: normals[i], cnz: cn[2], cv, depth: cv.reduce((a, v) => a + v[2], 0) / cv.length, b: brights[i] });
     }
     vis.sort((a, b) => a.depth - b.depth);
     const picks = onPickFace || onBrushFaces ? [] : null;
@@ -1180,14 +822,23 @@ const Model3DCanvas = React.memo(function Model3DCanvas({ mesh, L, ramp, mode, i
       const met = zoneMetals && zoneMetals[zif];
       const idx = tierIndex(o.b, zr.length);
       let fill, dim = isoTier != null && tierKeys[idx] !== isoTier;
-      if (sprayOn) { fill = mix("#33322d", sprayColor, sprayCoverage(o.n, L, focus)); dim = false; }
-      else if (mode === "prime") fill = "#1b1b1b";
+      if (!lightOn) { // flat scheme: base color under a neutral viewing light so form still reads
+        const baseC = mode === "prime" ? primerColor : met ? nmmColor(met, 0.5, [0, 0, 1]) : (zr[1] || zr[0]);
+        const aoF = mesh.ao ? mesh.ao[o.i] : 1;
+        fill = mix("#000000", baseC, (0.55 + 0.45 * Math.max(0, o.cnz)) * (0.7 + 0.3 * aoF));
+        dim = false;
+      }
+      else if (sprayOn) { fill = mix("#33322d", sprayColor, sprayCoverage(o.n, L, focus)); dim = false; }
+      else if (mode === "prime") fill = primerColor;
       else if (mode === "zenithal") fill = valueGrey(o.b);
-      else if (glazeOn) fill = glazeColor(o.b, glazeLayers, pooling);
       else if (met) fill = nmmColor(met, o.b, o.n); // NMM zone: metal shading, not the tier ramp
       else fill = zr[idx];
+      if (glazeOn && mode !== "prime" && !sprayOn) {
+        for (const gz of glazeLayers) fill = mix(fill, gz.color, clamp(gz.opacity * (1 - pooling * o.b), 0, 1));
+      }
       if (valueMode && mode === "paint" && !sprayOn) fill = valueGreyOf(fill);
       if (orbOn && Lorb && !sprayOn) fill = orbGlow(fill, o.n, Lorb, orbColor, orbInt);
+      if (rimOn && Lrim && !sprayOn) fill = orbGlow(fill, o.n, Lrim, rimColor, rimInt);
       ctx.globalAlpha = dim ? 0.12 : 1;
       ctx.beginPath();
       const pts = picks ? [] : null;
@@ -1208,12 +859,13 @@ const Model3DCanvas = React.memo(function Model3DCanvas({ mesh, L, ramp, mode, i
       ctx.fillStyle = g; ctx.beginPath(); ctx.arc(X, Y, 18, 0, Math.PI * 2); ctx.fill();
       ctx.fillStyle = "#fff6da"; ctx.beginPath(); ctx.arc(X, Y, 3, 0, Math.PI * 2); ctx.fill();
     }
-  }, [mesh, brights, L, ramp, mode, isoTier, tierKeys, glazeOn, glazeLayers, pooling, valueMode, sprayOn, focus, sprayColor, orbOn, Lorb, orbColor, orbInt, rot, zoom, zoneRamps, zoneMap, zoneMetals, zoneVer, onPickFace]);
+  }, [mesh, brights, L, ramp, mode, isoTier, tierKeys, glazeOn, glazeLayers, pooling, valueMode, sprayOn, focus, sprayColor, orbOn, Lorb, orbColor, orbInt, rot, zoom, zoneRamps, zoneMap, zoneMetals, zoneVer, onPickFace, rimOn, Lrim, rimColor, rimInt, primerColor, lightOn]);
 
   return (
     <div className="relative flex flex-col items-center">
       <canvas ref={canvasRef} width={460} height={600}
         className={"w-full h-auto select-none touch-none " + (onPickFace || onBrushFaces ? "cursor-crosshair" : noDrag ? "" : "cursor-grab active:cursor-grabbing")}
+        onContextMenu={(e) => e.preventDefault()}
         onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerLeave={onUp} />
       <div ref={ringRef} className="pointer-events-none absolute rounded-full border-2 border-amber-300/70" style={{ display: "none" }} />
       {!noDrag && (
@@ -1306,11 +958,71 @@ function glZonePatch(g, start, maxFaces = 60000) {
     for (const j of adj[out[qi]]) if (!seen.has(j) && dotF(out[qi], j) > 0.72) { seen.add(j); out.push(j); }
   return out;
 }
+/* ---- Mirror map: for each face, its twin across the x=0 centerline (nearest
+        centroid match) — lets one brush stroke paint both pauldrons. ---- */
+function glMirrorMap(g) {
+  if (g._mirror) return g._mirror;
+  const n = g.nFaces;
+  const cent = new Float32Array(n * 3), cnt = new Uint16Array(n);
+  for (let t = 0; t < g.triCount; t++) {
+    const f = g.fid[t * 3];
+    for (let v = 0; v < 3; v++) {
+      cent[f * 3] += g.pos[t * 9 + v * 3]; cent[f * 3 + 1] += g.pos[t * 9 + v * 3 + 1]; cent[f * 3 + 2] += g.pos[t * 9 + v * 3 + 2];
+      cnt[f]++;
+    }
+  }
+  for (let i = 0; i < n; i++) { const c = cnt[i] || 1; cent[i * 3] /= c; cent[i * 3 + 1] /= c; cent[i * 3 + 2] /= c; }
+  const cell = Math.max(0.75, g.radius / 80);
+  const q = (v) => Math.round(v / cell) + 4096;
+  const buckets = new Map();
+  for (let i = 0; i < n; i++) {
+    const k = (q(cent[i * 3]) * 8192 + q(cent[i * 3 + 1])) * 8192 + q(cent[i * 3 + 2]);
+    const b = buckets.get(k); if (b) b.push(i); else buckets.set(k, [i]);
+  }
+  const mir = new Int32Array(n).fill(-1);
+  const tol2 = (cell * 2.5) * (cell * 2.5);
+  for (let i = 0; i < n; i++) {
+    const mx = -cent[i * 3], my = cent[i * 3 + 1], mz = cent[i * 3 + 2];
+    let best = -1, bd = tol2;
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+      const b = buckets.get(((q(mx) + dx) * 8192 + (q(my) + dy)) * 8192 + (q(mz) + dz));
+      if (!b) continue;
+      for (const j of b) {
+        const d = (cent[j * 3] - mx) ** 2 + (cent[j * 3 + 1] - my) ** 2 + (cent[j * 3 + 2] - mz) ** 2;
+        if (d < bd) { bd = d; best = j; }
+      }
+    }
+    mir[i] = best;
+  }
+  return (g._mirror = mir);
+}
+/* ---- Smooth shading: average normals across welded vertices so organic scans
+        read as continuous surfaces instead of triangle facets. ---- */
+function glSmoothNormals(g) {
+  if (g.nrmSmooth) return g.nrmSmooth;
+  const q = (v) => Math.round(v * 10) + 8192;
+  const acc = new Map();
+  const nC = g.triCount * 3;
+  for (let i = 0; i < nC; i++) {
+    const k = (q(g.pos[i * 3]) * 16384 + q(g.pos[i * 3 + 1])) * 16384 + q(g.pos[i * 3 + 2]);
+    let a = acc.get(k); if (!a) { a = [0, 0, 0]; acc.set(k, a); }
+    a[0] += g.nrm[i * 3]; a[1] += g.nrm[i * 3 + 1]; a[2] += g.nrm[i * 3 + 2];
+  }
+  const out = new Float32Array(nC * 3);
+  for (let i = 0; i < nC; i++) {
+    const k = (q(g.pos[i * 3]) * 16384 + q(g.pos[i * 3 + 1])) * 16384 + q(g.pos[i * 3 + 2]);
+    const a = acc.get(k);
+    const m = Math.hypot(a[0], a[1], a[2]) || 1;
+    out[i * 3] = a[0] / m; out[i * 3 + 1] = a[1] / m; out[i * 3 + 2] = a[2] / m;
+  }
+  return (g.nrmSmooth = out);
+}
 const GL_VERT = `#version 300 es
 precision highp float;
 in vec3 aPos; in vec3 aNrm; in float aFid;
 uniform vec3 uCenter; uniform vec4 uRot;
 uniform float uSX, uSY, uCamDist, uZr;
+uniform vec2 uPan;
 out vec3 vWN; out float vCNz; flat out int vFid;
 vec3 rotv(vec3 p){
   p = vec3(uRot.x*p.x + uRot.y*p.z, p.y, -uRot.y*p.x + uRot.x*p.z);
@@ -1318,6 +1030,7 @@ vec3 rotv(vec3 p){
 }
 void main(){
   vec3 v = rotv(aPos - uCenter);
+  v.xy += uPan;
   vec3 cn = rotv(aNrm);
   vWN = aNrm; vCNz = cn.z; vFid = int(aFid + 0.5);
   float w = uCamDist - v.z;
@@ -1328,12 +1041,12 @@ precision highp float;
 precision highp int;
 in vec3 vWN; in float vCNz; flat in int vFid;
 uniform sampler2D uZTex;
-uniform vec3 uL, uLorb, uOrbColor, uSprayColor;
+uniform vec3 uL, uLorb, uOrbColor, uSprayColor, uLrim, uRimColor, uPrimer;
 uniform vec3 uRamps[28];
 uniform vec4 uGlaze[8];
 uniform int uGlazeN, uMode, uNTiers, uIso, uMetals[4];
-uniform float uPooling, uFocus, uOrbInt;
-uniform bool uGlazeOn, uValueMode, uSprayOn, uOrbOn;
+uniform float uPooling, uFocus, uOrbInt, uRimInt, uLightInt;
+uniform bool uGlazeOn, uValueMode, uSprayOn, uOrbOn, uRimOn, uFlat;
 out vec4 frag;
 vec3 hsl2rgb(vec3 hsl){
   vec3 rgb = clamp(abs(mod(hsl.x*6.0+vec3(0.0,4.0,2.0),6.0)-3.0)-1.0,0.0,1.0);
@@ -1359,32 +1072,37 @@ void main(){
   float ao = zd.g;
   vec3 n = normalize(vWN);
   float d = dot(n, uL);
-  float b = 0.05*ao + 0.95*smoothstep(-0.3, 1.0, d)*(0.5 + 0.5*ao);
+  float b = 0.05*ao + 0.95*uLightInt*smoothstep(-0.3, 1.0, d)*(0.5 + 0.5*ao);
   int idx = clamp(int(floor(b*float(uNTiers-1) + 0.5)), 0, uNTiers-1);
   bool dim = (uIso >= 0) && (idx != uIso);
   vec3 fill;
-  if (uSprayOn) {
+  if (uFlat) { // flat paint scheme: base-coat color under a neutral viewing light, so the sculpt still reads
+    vec3 baseC = uMode == 1 ? uPrimer : (uMetals[zone] > 0 ? nmm(uMetals[zone], 0.5, vec3(0.0, 0.0, 1.0)) : uRamps[zone*7 + 1]);
+    float vb = (0.55 + 0.45 * clamp(vCNz, 0.0, 1.0)) * (0.7 + 0.3 * ao);
+    fill = baseC * vb;
+    dim = false;
+  }
+  else if (uSprayOn) {
     float edge = -0.15 + uFocus*0.85;
     float cov = smoothstep(edge, edge + (0.6 - uFocus*0.48), d);
     fill = mix(vec3(0.200,0.196,0.176), uSprayColor, cov); dim = false;
   }
-  else if (uMode == 1) fill = vec3(0.106,0.106,0.106);
+  else if (uMode == 1) fill = uPrimer;
   else if (uMode == 2) fill = vGrey(b);
-  else if (uGlazeOn) {
-    vec3 c = vGrey(b);
-    for (int i = 0; i < 8; i++) { if (i >= uGlazeN) break;
-      float eff = clamp(uGlaze[i].a*(1.0 - uPooling*b), 0.0, 1.0);
-      c = mix(c, uGlaze[i].rgb, eff);
-    }
-    fill = c;
-  }
   else if (uMetals[zone] > 0) fill = nmm(uMetals[zone], b, n);
   else fill = uRamps[zone*7 + idx];
+  if (uGlazeOn && uMode != 1 && !uSprayOn) { // glaze washes over whatever is underneath —
+    for (int i = 0; i < 8; i++) { if (i >= uGlazeN) break; // materials normally, grey on the zenithal step
+      float eff = clamp(uGlaze[i].a*(1.0 - uPooling*b), 0.0, 1.0);
+      fill = mix(fill, uGlaze[i].rgb, eff);
+    }
+  }
   if (uValueMode && uMode == 0 && !uSprayOn) {
     vec3 lin = pow(fill, vec3(2.2));
     fill = vec3(pow(dot(lin, vec3(0.2126,0.7152,0.0722)), 1.0/2.2));
   }
   if (uOrbOn && !uSprayOn) fill = clamp(fill + uOrbColor * (uOrbInt * smoothstep(0.0,1.0,dot(n,uLorb))), 0.0, 1.0);
+  if (uRimOn && !uSprayOn) fill = clamp(fill + uRimColor * (uRimInt * smoothstep(0.0,1.0,dot(n,uLrim))), 0.0, 1.0);
   float alpha = dim ? 0.12 : 1.0;
   frag = vec4(fill*alpha, alpha);
 }`;
@@ -1402,12 +1120,14 @@ precision highp float;
 in vec3 aPos;
 uniform vec3 uCenter; uniform vec4 uRot;
 uniform float uSX, uSY, uCamDist, uZr;
+uniform vec2 uPan;
 vec3 rotv(vec3 p){
   p = vec3(uRot.x*p.x + uRot.y*p.z, p.y, -uRot.y*p.x + uRot.x*p.z);
   return vec3(p.x, uRot.z*p.y - uRot.w*p.z, uRot.w*p.y + uRot.z*p.z);
 }
 void main(){
   vec3 v = rotv(aPos - uCenter);
+  v.xy += uPan;
   float w = uCamDist - v.z;
   gl_Position = vec4(v.x*uSX, v.y*uSY, -v.z*uZr*w*0.999, w);
 }`;
@@ -1429,12 +1149,13 @@ function glProgram(gl, vs, fs) {
 
 const ZTEX_W = 2048;
 let meshKeyN = 0;
-const ModelGL = React.memo(function ModelGL({ mesh, L, ramp, mode, isoTier, tierKeys, glazeOn, glazeLayers, pooling, valueMode, sprayOn = false, focus = 0.5, sprayColor = "#cfe3ef", orbOn = false, Lorb = null, orbColor = "#3fb8ff", orbInt = 0.5, noDrag, initRot, zoneRamps = null, zoneMetals = null, zoneArr = null, zoneVer = 0, onPickFace = null, brushSize = 0, onBrushFaces = null, onGLFail }) {
+const ModelGL = React.memo(function ModelGL({ mesh, L, ramp, mode, isoTier, tierKeys, glazeOn, glazeLayers, pooling, valueMode, sprayOn = false, focus = 0.5, sprayColor = "#cfe3ef", orbOn = false, Lorb = null, orbColor = "#3fb8ff", orbInt = 0.5, noDrag, initRot, zoneRamps = null, zoneMetals = null, zoneArr = null, zoneVer = 0, onPickFace = null, brushSize = 0, onBrushFaces = null, onStrokeEnd = null, rimOn = false, Lrim = null, rimColor = "#9fc8ff", rimInt = 0.4, smoothShade = false, onToggleSmooth = null, primerColor = "#1b1b1b", lightOn = true, lightInt = 1, onGLFail }) {
   const [rot, setRot] = useState(initRot || { yaw: -0.5, pitch: 0.12 });
   const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 }); // camera target offset in view units
   const canvasRef = useRef(null), ringRef = useRef(null);
   const S = useRef(null);
-  const drag = useRef(null), raf = useRef(0), pendingRot = useRef(null);
+  const drag = useRef(null), raf = useRef(0), pendingRot = useRef(null), pendingPan = useRef(null);
   // A lost/reused context can't be revived on the same element — remount the canvas per mesh.
   const meshKey = useMemo(() => { meshKeyN += 1; return meshKeyN; }, [mesh]);
 
@@ -1453,7 +1174,7 @@ const ModelGL = React.memo(function ModelGL({ mesh, L, ramp, mode, isoTier, tier
         gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, size, gl.FLOAT, false, 0, 0); return b;
       };
       const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
-      buf(g.pos, 0, 3); buf(g.nrm, 1, 3); buf(g.fid, 2, 1);
+      buf(g.pos, 0, 3); const nrmBuf = buf(g.nrm, 1, 3); buf(g.fid, 2, 1);
       let lineVao = null;
       if (line) { lineVao = gl.createVertexArray(); gl.bindVertexArray(lineVao); buf(g.lines, 0, 3); }
       gl.bindVertexArray(null);
@@ -1476,10 +1197,25 @@ const ModelGL = React.memo(function ModelGL({ mesh, L, ramp, mode, isoTier, tier
       gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, rb);
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       const U = (p) => { const c = {}; return (k) => (k in c ? c[k] : (c[k] = gl.getUniformLocation(p, k))); };
-      S.current = { gl, g, prog, pick, line, vao, lineVao, ztex, texH, fbo, up: U(prog), upk: U(pick), ul: line ? U(line) : null, zver: -1, ztmp: new Uint8Array(ZTEX_W * texH * 4) };
+      S.current = { gl, g, prog, pick, line, vao, lineVao, ztex, texH, fbo, nrmBuf, nrmSmoothBuf: null, up: U(prog), upk: U(pick), ul: line ? U(line) : null, zver: -1, ztmp: new Uint8Array(ZTEX_W * texH * 4) };
     } catch (err) { S.current = null; onGLFail && onGLFail(); return; }
     return () => { try { gl.getExtension("WEBGL_lose_context")?.loseContext(); } catch {} S.current = null; };
   }, [mesh]);
+
+  useEffect(() => { // faceted <-> smooth: swap which normal buffer feeds attribute 1
+    const st = S.current; if (!st) return;
+    const { gl, g } = st;
+    gl.bindVertexArray(st.vao);
+    if (smoothShade) {
+      if (!st.nrmSmoothBuf) {
+        st.nrmSmoothBuf = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, st.nrmSmoothBuf);
+        gl.bufferData(gl.ARRAY_BUFFER, glSmoothNormals(g), gl.STATIC_DRAW);
+      } else gl.bindBuffer(gl.ARRAY_BUFFER, st.nrmSmoothBuf);
+    } else gl.bindBuffer(gl.ARRAY_BUFFER, st.nrmBuf);
+    gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
+    gl.bindVertexArray(null);
+  }, [smoothShade, mesh]);
 
   const setCam = (u, st) => {
     const { gl, g } = st, cnv = canvasRef.current;
@@ -1491,6 +1227,7 @@ const ModelGL = React.memo(function ModelGL({ mesh, L, ramp, mode, isoTier, tier
     gl.uniform1f(u("uSY"), (fit * camDist) / (H / 2));
     gl.uniform1f(u("uCamDist"), camDist);
     gl.uniform1f(u("uZr"), 1 / (g.radius * 1.1));
+    gl.uniform2f(u("uPan"), pan.x, pan.y);
   };
   useEffect(() => { // redraw after every commit that touched a visual input
     const st = S.current; if (!st) return;
@@ -1518,6 +1255,7 @@ const ModelGL = React.memo(function ModelGL({ mesh, L, ramp, mode, isoTier, tier
     gl.uniform3fv(up("uLorb"), Lorb || [0, 0, 1]);
     gl.uniform3fv(up("uOrbColor"), hexV3(orbColor));
     gl.uniform3fv(up("uSprayColor"), hexV3(sprayColor));
+    gl.uniform3fv(up("uPrimer"), hexV3(primerColor));
     const ramps = new Float32Array(84);
     const zr = zoneRamps && zoneRamps.length ? zoneRamps : [ramp];
     for (let z = 0; z < 4; z++) {
@@ -1539,10 +1277,16 @@ const ModelGL = React.memo(function ModelGL({ mesh, L, ramp, mode, isoTier, tier
     gl.uniform1f(up("uPooling"), pooling ?? 0.6);
     gl.uniform1f(up("uFocus"), focus);
     gl.uniform1f(up("uOrbInt"), orbInt);
+    gl.uniform1f(up("uLightInt"), lightInt);
     gl.uniform1i(up("uGlazeOn"), glazeOn ? 1 : 0);
     gl.uniform1i(up("uValueMode"), valueMode ? 1 : 0);
     gl.uniform1i(up("uSprayOn"), sprayOn ? 1 : 0);
     gl.uniform1i(up("uOrbOn"), orbOn && Lorb ? 1 : 0);
+    gl.uniform3fv(up("uLrim"), Lrim || [0, 0, 1]);
+    gl.uniform3fv(up("uRimColor"), hexV3(rimColor));
+    gl.uniform1f(up("uRimInt"), rimInt);
+    gl.uniform1i(up("uRimOn"), rimOn && Lrim ? 1 : 0);
+    gl.uniform1i(up("uFlat"), lightOn ? 0 : 1);
     gl.bindVertexArray(st.vao);
     gl.drawArrays(gl.TRIANGLES, 0, g.triCount * 3);
     if (st.line) {
@@ -1608,12 +1352,30 @@ const ModelGL = React.memo(function ModelGL({ mesh, L, ramp, mode, isoTier, tier
   };
   const onDown = (e) => {
     if (noDrag) return;
-    if (onBrushFaces && brushSize > 0) { drag.current = { painting: true }; e.currentTarget.setPointerCapture?.(e.pointerId); brushAt(e); return; }
+    if (e.shiftKey || e.button === 1) { // pan: shift-drag or middle-drag
+      e.preventDefault();
+      drag.current = { panning: true, moved: true, x: e.clientX, y: e.clientY, px: pan.x, py: pan.y };
+      e.currentTarget.setPointerCapture?.(e.pointerId); return;
+    }
+    // brush paints with the left button only; right-drag still rotates while brushing
+    if (onBrushFaces && brushSize > 0 && e.button === 0) { drag.current = { painting: true }; e.currentTarget.setPointerCapture?.(e.pointerId); brushAt(e); return; }
     drag.current = { x: e.clientX, y: e.clientY, moved: false, ...rot }; e.currentTarget.setPointerCapture?.(e.pointerId);
   };
   const onMove = (e) => {
     moveRing(e);
     if (!drag.current) return;
+    if (drag.current.panning) {
+      const st = S.current, cnv = canvasRef.current; if (!st || !cnv) return;
+      const r = cnv.getBoundingClientRect();
+      const fit = (Math.min(cnv.width, cnv.height) * 0.46 * zoom) / st.g.radius;
+      const s = (cnv.width / r.width) / fit, lim = st.g.radius * 1.2; // clamp so the model can't leave the frame
+      pendingPan.current = {
+        x: clamp(drag.current.px + (e.clientX - drag.current.x) * s, -lim, lim),
+        y: clamp(drag.current.py - (e.clientY - drag.current.y) * s, -lim, lim),
+      };
+      if (!raf.current) raf.current = requestAnimationFrame(() => { raf.current = 0; if (pendingPan.current) setPan(pendingPan.current); });
+      return;
+    }
     if (drag.current.painting) { brushAt(e); return; }
     const dx = e.clientX - drag.current.x, dy = e.clientY - drag.current.y;
     if (Math.abs(dx) + Math.abs(dy) > 4) drag.current.moved = true;
@@ -1622,10 +1384,11 @@ const ModelGL = React.memo(function ModelGL({ mesh, L, ramp, mode, isoTier, tier
   };
   const onUp = (e) => {
     const wasPainting = drag.current && drag.current.painting;
-    const wasClick = drag.current && !drag.current.painting && !drag.current.moved;
+    const wasClick = drag.current && !drag.current.painting && !drag.current.panning && !drag.current.moved;
     drag.current = null; e.currentTarget.releasePointerCapture?.(e.pointerId);
     if (e.type === "pointerleave" && ringRef.current) ringRef.current.style.display = "none";
-    if (wasPainting || !wasClick || !onPickFace) return;
+    if (wasPainting) { onStrokeEnd && onStrokeEnd(); return; }
+    if (!wasClick || !onPickFace) return;
     const id = pickAt(e);
     if (id >= 0) onPickFace(id);
   };
@@ -1635,26 +1398,38 @@ const ModelGL = React.memo(function ModelGL({ mesh, L, ramp, mode, isoTier, tier
     const onWheel = (e) => { e.preventDefault(); setZoom((z) => clamp(z * (e.deltaY < 0 ? 1.15 : 1 / 1.15), 0.6, 4)); };
     cnv.addEventListener("wheel", onWheel, { passive: false });
     return () => cnv.removeEventListener("wheel", onWheel);
-  }, [noDrag]);
+  }, [noDrag, meshKey]); // the canvas remounts per mesh — rebind or scroll-zoom dies after an import
   return (
     <div className="relative flex flex-col items-center">
       <canvas key={meshKey} ref={canvasRef} width={460} height={600}
         className={"w-full h-auto select-none touch-none " + (onPickFace || onBrushFaces ? "cursor-crosshair" : noDrag ? "" : "cursor-grab active:cursor-grabbing")}
+        onContextMenu={(e) => e.preventDefault()}
         onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerLeave={onUp} />
       <div ref={ringRef} className="pointer-events-none absolute rounded-full border-2 border-amber-300/70" style={{ display: "none" }} />
       {!noDrag && (
-        <div className="absolute top-2 right-2 flex flex-col gap-1">
-          <button onClick={() => setZoom((z) => clamp(z * 1.25, 0.6, 4))} aria-label="Zoom in"
-            className="w-7 h-7 rounded-md border border-stone-600 bg-stone-900/70 text-stone-300 hover:text-white text-sm leading-none">+</button>
-          <button onClick={() => setZoom((z) => clamp(z / 1.25, 0.6, 4))} aria-label="Zoom out"
-            className="w-7 h-7 rounded-md border border-stone-600 bg-stone-900/70 text-stone-300 hover:text-white text-sm leading-none">−</button>
-          {zoom !== 1 && (
-            <button onClick={() => setZoom(1)} aria-label="Reset zoom"
-              className="w-7 h-7 rounded-md border border-stone-600 bg-stone-900/70 text-stone-400 hover:text-white text-[10px] leading-none">1:1</button>
-          )}
+        <div className="mt-1.5 w-full flex items-center justify-between gap-2">
+          {onToggleSmooth ? (
+            <button onClick={onToggleSmooth}
+              title={smoothShade ? "Smooth surfaces — switch to faceted plane reading" : "Faceted planes — switch to smooth surfaces"}
+              className="px-2 h-6 rounded-md border border-stone-700 hover:border-stone-500 text-[10px] text-stone-400 leading-none">
+              {smoothShade ? "smooth" : "faceted"}
+            </button>
+          ) : <span />}
+          <span className="text-[9px] tracking-[0.2em] uppercase text-stone-500 text-center">
+            {onBrushFaces && brushSize > 0 ? "drag paints · right-drag rotate · shift pan · scroll zoom" : "drag rotate · shift-drag pan · scroll zoom"}
+          </span>
+          <span className="flex items-center gap-1 flex-none">
+            <button onClick={() => setZoom((z) => clamp(z / 1.25, 0.6, 4))} aria-label="Zoom out"
+              className="w-6 h-6 rounded-md border border-stone-700 hover:border-stone-500 text-stone-400 leading-none">−</button>
+            <button onClick={() => setZoom((z) => clamp(z * 1.25, 0.6, 4))} aria-label="Zoom in"
+              className="w-6 h-6 rounded-md border border-stone-700 hover:border-stone-500 text-stone-400 leading-none">+</button>
+            {(zoom !== 1 || pan.x !== 0 || pan.y !== 0) && (
+              <button onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }} aria-label="Reset view"
+                className="px-1.5 h-6 rounded-md border border-stone-700 hover:border-stone-500 text-[9px] text-stone-400 leading-none">reset</button>
+            )}
+          </span>
         </div>
       )}
-      {!noDrag && <div className="mt-1 text-[10px] tracking-[0.25em] uppercase text-stone-400">3D · drag to rotate · scroll to zoom</div>}
     </div>
   );
 });
@@ -1732,19 +1507,6 @@ function ColorWheel({ ramp, accents, base, onPickBase, previewAccent, onSelectAc
 }
 
 /* recess-glaze preview: front view with an accent glazed into the shadow tier */
-function GlazePreview({ accent, ramp, L, tierKeys, regions }) {
-  return (
-    <svg viewBox="0 0 200 460" className="w-full h-auto">
-      {regions.map((r, i) => {
-        const b = brightness(r.n, L, r.ao);
-        const idx = tierIndex(b, ramp.length);
-        let fill = ramp[idx];
-        if (accent && tierKeys[idx] === "shadow") fill = mix(fill, accent, 0.55);
-        return <polygon key={i} points={r.p} fill={fill} stroke="#00000033" strokeWidth="0.6" strokeLinejoin="round" />;
-      })}
-    </svg>
-  );
-}
 
 /* ============================== APP ============================== */
 export default function App() {
@@ -1760,7 +1522,7 @@ export default function App() {
   const [recipes, setRecipes] = useState([]);
   const [name, setName] = useState("");
   const [status, setStatus] = useState("");
-  const [model, setModel] = useState(null); // null = chooser screen
+  const [model, setModel] = useState("male"); // straight to the bench — no landing screen
   const [glazeOn, setGlazeOn] = useState(false);
   const [method, setMethod] = useState("brush"); // brush | airbrush — reshapes the Steps copy
   const [spray, setSpray] = useState(false);      // show spray coverage instead of value (airbrush only)
@@ -1781,21 +1543,33 @@ export default function App() {
   const [zonePaint, setZonePaint] = useState(false); // when on, clicking the figure assigns the active zone
   const [zoneMode, setZoneMode] = useState("patch"); // 3D assign style: "patch" auto-fill | "brush" drag-paint
   const [brushSize, setBrushSize] = useState(22);    // brush radius in canvas px
-  const [zoneMap2d, setZoneMap2d] = useState({});    // { model: { viewKey: { regionIdx: zone } } }
+  const [mirrorOn, setMirrorOn] = useState(false);   // paint both sides of a symmetric figure
+  const [smoothShade, setSmoothShade] = useState(false); // faceted (plane reading) vs smooth surfaces
+  const [rimOn, setRimOn] = useState(false);         // second light: a cooler rim opposite the key
+  const [rimAz, setRimAz] = useState(200);
+  const [rimEl, setRimEl] = useState(15);
+  const [rimColor, setRimColor] = useState("#9fc8ff");
+  const [rimInt, setRimInt] = useState(0.4);
+  const [zenithalOn, setZenithalOn] = useState(false); // zenithal underpainting is an opt-in technique
+  const [lightOn, setLightOn] = useState(true); // directional light planning; off = flat paint scheme
+  const [lightInt, setLightInt] = useState(1);  // key light strength — soft (low contrast) to harsh
+  const [primerColor, setPrimerColor] = useState("#1b1b1b"); // primer can be any color
   const [zoneMap3d, setZoneMap3d] = useState({});    // { model: { faceIdx: zone } }
   // Collapsible control sections — core ones open by default, specialty tools tucked away.
-  const [openSec, setOpenSec] = useState({ recipe: true, zones: true, light: true });
-  const sec = (k) => ({ open: !!openSec[k], onToggle: () => setOpenSec((s) => ({ ...s, [k]: !s[k] })) });
+  const [openSec, setOpenSec] = useState({});
+  const SEC_OPEN = { colors: true, light: true }; // open by default
+  const sec = (k) => ({ open: openSec[k] ?? !!SEC_OPEN[k], onToggle: () => setOpenSec((s) => ({ ...s, [k]: !(s[k] ?? !!SEC_OPEN[k]) })) });
   // Status messages surface as a toast and clear themselves.
   useEffect(() => { if (!status) return; const t = setTimeout(() => setStatus(""), 2600); return () => clearTimeout(t); }, [status]);
   const [pooling, setPooling] = useState(0.6);
-  const [glazeLayers, setGlazeLayers] = useState(() => defaultGlaze(generateRamp("#5f8a4a", 5), 3));
+  const [glazeLayers, setGlazeLayers] = useState(() => [{ color: "#7a5a3a", opacity: 0.3 }]); // warm unifying wash
 
   const L = useMemo(() => lightVector(az, el), [az, el]);
   const Lorb = useMemo(() => lightVector(orbAz, orbEl), [orbAz, orbEl]);
+  const Lrim = useMemo(() => lightVector(rimAz, rimEl), [rimAz, rimEl]);
   const tiers = useMemo(() => tierMeta(numSteps), [numSteps]);
   const tierKeys = useMemo(() => tiers.map((t) => t.key), [tiers]);
-  const stages = useMemo(() => buildStages(numSteps, method), [numSteps, method]);
+  const stages = useMemo(() => buildStages(numSteps, method, zenithalOn && lightOn, lightOn), [numSteps, method, zenithalOn, lightOn]);
   const stage = stages.find((s) => s.id === activeStage) || stages[0];
   const sprayActive = spray && method === "airbrush";
   const sprayColor = useMemo(() => {
@@ -1810,6 +1584,11 @@ export default function App() {
   // What each zone LOOKS like (metal zones show the NMM ramp) — drives swatches + paint matching.
   const dispRamps = useMemo(() => zoneRamps.map((zr, zi) => (zoneMetals[zi] ? nmmRamp(zoneMetals[zi], zr.length) : zr)), [zoneRamps, zoneMetals]);
   const zoneMatches = useMemo(() => dispRamps.map((zr) => zr.map((c) => nearestPaint(c, paintBrand))), [dispRamps, paintBrand]);
+  // Pinned accent preview: glaze the accent into every material's shadow tier, live on the model.
+  const viewRamps = useMemo(() => {
+    if (!previewAccent) return zoneRamps;
+    return zoneRamps.map((zr) => { const r = [...zr]; r[0] = mix(r[0], previewAccent, 0.42); return r; });
+  }, [zoneRamps, previewAccent]);
   const cycleMetal = (zi) => {
     const next = { null: "steel", steel: "gold", gold: null }[String(zoneMetals[zi])];
     if (zi === 0) setMainMetal(next);
@@ -1817,14 +1596,6 @@ export default function App() {
   };
   const accentMatches = useMemo(() => accents.map((c) => nearestPaint(c, paintBrand)), [accents, paintBrand]);
   // Zone assignment handlers — clicking the figure paints the active zone onto it.
-  const pickRegion = useCallback((viewKey) => (i) => {
-    setZoneMap2d((m) => {
-      const mm = { ...(m[model] || {}) }, vv = { ...(mm[viewKey] || {}) };
-      if (activeZone === 0) delete vv[i]; else vv[i] = activeZone;
-      mm[viewKey] = vv;
-      return { ...m, [model]: mm };
-    });
-  }, [model, activeZone]);
   // 3D zone data lives in flat per-face arrays (fast enough to brush a 500k-face scan);
   // the sparse object form is only for persistence of the small built-in models.
   const zoneArrs = useRef({});
@@ -1853,19 +1624,49 @@ export default function App() {
       setZoneMap3d((m) => ({ ...m, [mdl]: sparse }));
     }, 400);
   };
-  const applyFaces = useCallback((idxs) => {
+  const undoStack = useRef([]), undoCur = useRef(null); // stroke-level undo, last 10
+  const applyFaces = useCallback((idxs, closeStroke = false) => {
     const a = zoneArrFor(model); if (!a) return;
-    for (const f of idxs) a[f] = activeZone;
+    let all = idxs;
+    if (mirrorOn) { // symmetric assignment: each face also paints its mirror twin
+      const mesh = MESH3D[model];
+      const mir = mesh ? glMirrorMap(glifyMesh(mesh)) : null;
+      if (mir) { all = [...idxs]; for (const f of idxs) { const m = mir[f]; if (m >= 0) all.push(m); } }
+    }
+    let rec = undoCur.current;
+    if (!rec || rec.model !== model) {
+      rec = { model, prev: new Map() };
+      undoCur.current = rec;
+      undoStack.current.push(rec);
+      if (undoStack.current.length > 10) undoStack.current.shift();
+    }
+    for (const f of all) { if (!rec.prev.has(f)) rec.prev.set(f, a[f]); a[f] = activeZone; }
+    if (closeStroke) undoCur.current = null;
     setZoneVer((v) => v + 1);
     scheduleZonePersist(model);
-  }, [model, activeZone]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [model, activeZone, mirrorOn]); // eslint-disable-line react-hooks/exhaustive-deps
+  const endStroke = useCallback(() => { undoCur.current = null; }, []);
+  const undoZone = useCallback(() => {
+    undoCur.current = null;
+    const rec = undoStack.current.pop(); if (!rec) return;
+    const a = zoneArrs.current[rec.model]; if (!a) return;
+    for (const [f, v] of rec.prev) a[f] = v;
+    setZoneVer((v) => v + 1);
+    scheduleZonePersist(rec.model);
+    setStatus("Undid zone stroke.");
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const h = (e) => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && model) { e.preventDefault(); undoZone(); } };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [model, undoZone]);
   const pickFace = useCallback((i) => {
     const mesh = MESH3D[model]; if (!mesh) return;
-    applyFaces(glZonePatch(glifyMesh(mesh), i)); // patch mode: a click grabs the smooth connected patch
+    applyFaces(glZonePatch(glifyMesh(mesh), i), true); // patch mode: a click grabs the smooth connected patch
   }, [model, applyFaces]);
   const brushFaces = applyFaces; // brush mode: paint exactly what the cursor touches
   const clearZones = () => {
-    setZoneMap2d((m) => ({ ...m, [model]: {} })); setZoneMap3d((m) => ({ ...m, [model]: {} }));
+    setZoneMap3d((m) => ({ ...m, [model]: {} }));
     const a = zoneArrs.current[model]; if (a) a.fill(0);
     if (model === "custom") idb.del("customzones").catch(() => {});
     setZoneVer((v) => v + 1);
@@ -1881,8 +1682,6 @@ export default function App() {
     const z = extraZones.length; if (!z) return;
     const stripFlat = (v) => Object.fromEntries(Object.entries(v).filter(([, zz]) => zz !== z));
     setZoneMap3d((m) => Object.fromEntries(Object.entries(m).map(([k, v]) => [k, stripFlat(v)])));
-    setZoneMap2d((m) => Object.fromEntries(Object.entries(m).map(([k, views]) => [k,
-      Object.fromEntries(Object.entries(views).map(([vk, v]) => [vk, stripFlat(v)]))])));
     for (const a of Object.values(zoneArrs.current)) if (a) { for (let i = 0; i < a.length; i++) if (a[i] === z) a[i] = 0; }
     setZoneVer((v) => v + 1);
     setExtraZones((zs) => zs.slice(0, -1));
@@ -1892,8 +1691,6 @@ export default function App() {
     setExtraZones((zs) => zs.map((zz, k) => (k === zi - 1 ? { ...zz, base: hex, ramp: generateRamp(hex, numSteps) } : zz)));
   };
   const only3d = !!(model && MODELS[model].only3d); // 3D-only model (no orthographic sheet)
-  const views = (model && MODELS[model].views) || STANDING; // fallback so sheet/preview code never sees undefined
-  const previewRegions = frontOf(views);
 
   // load saved recipe names
   const refreshList = useCallback(async () => {
@@ -1928,7 +1725,7 @@ export default function App() {
 
   const save = async () => {
     const nm = name.trim(); if (!nm) { setStatus("Name it first."); return; }
-    const recipe = { base, numSteps, ramp, accents, az, el, done, glazeOn, pooling, glazeLayers, method, spray, focus, orbOn, orbAz, orbEl, orbColor, orbInt, extraZones, mainMetal };
+    const recipe = { base, numSteps, ramp, accents, az, el, done, glazeOn, pooling, glazeLayers, method, spray, focus, orbOn, orbAz, orbEl, orbColor, orbInt, rimOn, rimAz, rimEl, rimColor, rimInt, zenithalOn, primerColor, lightOn, lightInt, extraZones, mainMetal };
     if (!window.storage) { setStatus("Storage unavailable in preview."); return; }
     try { await window.storage.set("recipe:" + nm, JSON.stringify(recipe)); setStatus("Saved “" + nm + "”."); refreshList(); }
     catch { setStatus("Save failed."); }
@@ -1944,7 +1741,7 @@ export default function App() {
       ? r.ramp : generateRamp(base, steps);
     const layers = Array.isArray(r.glazeLayers) && r.glazeLayers.length &&
       r.glazeLayers.every((l) => l && validHex(l.color) && Number.isFinite(l.opacity))
-      ? r.glazeLayers : defaultGlaze(ramp, 3);
+      ? r.glazeLayers : [{ color: "#7a5a3a", opacity: 0.3 }];
     setBase(base); setNumSteps(steps); setRamp(ramp);
     setAccents(Array.isArray(r.accents) ? r.accents.filter(validHex) : []);
     setAz(num(r.az, 0, 0, 360)); setEl(num(r.el, 32, -20, 90)); setPreviewAccent(null);
@@ -1954,6 +1751,12 @@ export default function App() {
     setSpray(!!r.spray); setFocus(num(r.focus, 0.5, 0, 1));
     setOrbOn(!!r.orbOn); setOrbAz(num(r.orbAz, 200, 0, 360)); setOrbEl(num(r.orbEl, 0, -20, 90));
     setOrbColor(validHex(r.orbColor) ? r.orbColor : "#3fb8ff"); setOrbInt(num(r.orbInt, 0.5, 0, 1));
+    setRimOn(!!r.rimOn); setRimAz(num(r.rimAz, 200, 0, 360)); setRimEl(num(r.rimEl, 15, -20, 90));
+    setRimColor(validHex(r.rimColor) ? r.rimColor : "#9fc8ff"); setRimInt(num(r.rimInt, 0.4, 0, 1));
+    setZenithalOn(!!r.zenithalOn);
+    setPrimerColor(validHex(r.primerColor) ? r.primerColor : "#1b1b1b");
+    setLightOn(r.lightOn !== false); // older recipes predate the toggle — treat as lit
+    setLightInt(num(r.lightInt, 1, 0.2, 1.5));
     const metalOk = (m) => (m === "steel" || m === "gold" ? m : null);
     setMainMetal(metalOk(r.mainMetal));
     setExtraZones(Array.isArray(r.extraZones)
@@ -2001,12 +1804,12 @@ export default function App() {
           if (res) {
             const r = JSON.parse(res.value);
             applyRecipe(r);
-            // Colors/light/steps are restored, but the app always opens on the model chooser.
+            if (r.model && MODELS[r.model] && (r.model !== "custom" || meshCache.custom)) setModel(r.model);
             if (typeof r.activeStage === "string") setActiveStage(r.activeStage);
             if (typeof r.paintBrand === "string") setPaintBrand(r.paintBrand);
-            if (r.zoneMap2d && typeof r.zoneMap2d === "object") setZoneMap2d(r.zoneMap2d);
             if (r.zoneMap3d && typeof r.zoneMap3d === "object") setZoneMap3d(r.zoneMap3d);
             if (r.openSec && typeof r.openSec === "object") setOpenSec(r.openSec);
+            if (typeof r.smoothShade === "boolean") setSmoothShade(r.smoothShade);
           }
         } catch {}
       }
@@ -2020,10 +1823,10 @@ export default function App() {
     // Debounced: sliders fire this every tick; one write after the user pauses is enough.
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
-      try { window.storage.set("session:last", JSON.stringify({ model, activeStage, base, numSteps, ramp, accents, az, el, done, glazeOn, pooling, glazeLayers, method, spray, focus, orbOn, orbAz, orbEl, orbColor, orbInt, paintBrand, extraZones, mainMetal, zoneMap2d, zoneMap3d, openSec })); } catch {}
+      try { window.storage.set("session:last", JSON.stringify({ model, activeStage, base, numSteps, ramp, accents, az, el, done, glazeOn, pooling, glazeLayers, method, spray, focus, orbOn, orbAz, orbEl, orbColor, orbInt, rimOn, rimAz, rimEl, rimColor, rimInt, zenithalOn, primerColor, lightOn, lightInt, smoothShade, paintBrand, extraZones, mainMetal, zoneMap3d, openSec })); } catch {}
     }, 300);
     return () => clearTimeout(saveTimer.current);
-  }, [model, activeStage, base, numSteps, ramp, accents, az, el, done, glazeOn, pooling, glazeLayers, method, spray, focus, orbOn, orbAz, orbEl, orbColor, orbInt, paintBrand, extraZones, mainMetal, zoneMap2d, zoneMap3d, openSec]);
+  }, [model, activeStage, base, numSteps, ramp, accents, az, el, done, glazeOn, pooling, glazeLayers, method, spray, focus, orbOn, orbAz, orbEl, orbColor, orbInt, rimOn, rimAz, rimEl, rimColor, rimInt, zenithalOn, primerColor, lightOn, lightInt, smoothShade, paintBrand, extraZones, mainMetal, zoneMap3d, openSec]);
 
   // Export a painting-reference PNG: the figure as shown + value ramp, accents, light & glaze.
   const exportPNG = () => {
@@ -2045,18 +1848,6 @@ export default function App() {
       const ar = live.width / live.height; let dw = figW, dh = figW / ar;
       if (dh > figH) { dh = figH; dw = figH * ar; }
       ctx.drawImage(live, fx + (figW - dw) / 2, fy, dw, dh);
-    } else {
-      const s = Math.min(figW / 200, figH / 460), ox = fx + (figW - 200 * s) / 2;
-      const zmFront = zoneMap2d[model]?.front || {};
-      for (const [ri, r] of previewRegions.entries()) {
-        const zif = zmFront[ri] || 0;
-        const zr = zoneRamps[zif] || ramp, met = zoneMetals[zif];
-        const b2 = brightness(r.n, L, r.ao);
-        const fill = met ? nmmColor(met, b2, r.n) : zr[tierIndex(b2, zr.length)];
-        ctx.beginPath();
-        r.p.trim().split(/\s+/).forEach((pt, i) => { const [x, y] = pt.split(",").map(Number); const X = ox + x * s, Y = fy + y * s; i ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y); });
-        ctx.closePath(); ctx.fillStyle = fill; ctx.fill(); ctx.lineWidth = 0.5; ctx.strokeStyle = "#00000033"; ctx.stroke();
-      }
     }
     let rx = fx + figW + 34, ry = top + 8;
     ctx.fillStyle = "#a8a29e"; ctx.font = "11px Segoe UI, system-ui, sans-serif"; ctx.fillText("VALUE RAMP", rx, ry); ry += 14;
@@ -2092,7 +1883,7 @@ export default function App() {
       ry += 40;
     }
     ctx.fillStyle = "#d6d3d1"; ctx.font = "12px Segoe UI, system-ui, sans-serif";
-    ctx.fillText("Light — orbit " + Math.round(az) + "°, height " + Math.round(el) + "°", rx, ry); ry += 20;
+    ctx.fillText("Light — orbit " + Math.round(az) + "°, height " + Math.round(el) + "°, intensity " + Math.round(lightInt * 100) + "%", rx, ry); ry += 20;
     ctx.fillText("Paint — " + (glazeOn ? "Glaze · pooling " + Math.round(pooling * 100) + "% · " + glazeLayers.length + " layers" : "Opaque"), rx, ry);
     const a = document.createElement("a");
     a.download = (name.trim() || "light-bench") + ".png";
@@ -2132,7 +1923,7 @@ export default function App() {
     } catch (e) { setImportMsg(String(e?.message || e)); }
   };
 
-  if (!model) return <Chooser ramp={ramp} L={L} onPick={setModel} onImport={importModel} customReady={customReady} importMsg={importMsg} detail={detail} onDetail={setDetail} />;
+
 
   return (
     <div className="min-h-screen w-full text-stone-200 lg:h-screen lg:overflow-hidden flex flex-col"
@@ -2150,29 +1941,50 @@ export default function App() {
             The <span style={{ color: ramp[ramp.length - 1] }}>Light</span> Bench
           </h1>
           <div className="flex items-center gap-2 mb-1">
-            <div className="flex items-center rounded-full border border-stone-700 overflow-hidden text-[11px]" title="Switch the Steps panel between brush and airbrush workflows">
-              <button onClick={() => setMethod("brush")}
-                className={"px-3 py-1.5 transition-colors " + (method === "brush" ? "bg-stone-700 text-stone-100" : "text-stone-400 hover:text-stone-200")}>Brush</button>
-              <button onClick={() => setMethod("airbrush")}
-                className={"px-3 py-1.5 transition-colors " + (method === "airbrush" ? "bg-sky-700/70 text-stone-100" : "text-stone-400 hover:text-stone-200")}>Airbrush</button>
+            <div className="flex items-center gap-1 flex-wrap">
+              <span className="text-[9px] uppercase tracking-wider text-stone-600 mr-0.5">Extras</span>
+              {[
+                ["Light direction", lightOn, () => setLightOn(!lightOn), "Plan directional light and value tiers — switch off for a flat paint scheme"],
+                ["Airbrush", method === "airbrush", () => setMethod(method === "airbrush" ? "brush" : "airbrush"), "Rewrite every step for airbrush workflow"],
+                ["Rim light", rimOn, () => setRimOn(!rimOn), "A second, cooler light — controls appear under Light direction"],
+                ["Glow", orbOn, () => setOrbOn(!orbOn), "Object-source glow (OSL) — controls appear under Light direction"],
+              ].map(([lb, on, fn, tip]) => (
+                <button key={lb} onClick={fn} aria-pressed={on} title={tip}
+                  className={"px-2.5 py-1 rounded-full text-[11px] border transition-colors " +
+                    (on ? "border-sky-500 text-sky-300 bg-sky-500/10" : "border-stone-700 text-stone-400 hover:text-stone-200")}>
+                  {lb}
+                </button>
+              ))}
             </div>
             <button onClick={exportPNG} title="Download a reference image to take to the bench"
               className="flex items-center gap-1 text-[11px] text-stone-400 hover:text-stone-200 border border-stone-700 hover:border-stone-500 rounded-full px-3 py-1.5">
               <Download size={12} /> Export PNG
             </button>
-            <button onClick={() => setModel(null)}
-              className="text-[11px] text-stone-400 hover:text-stone-200 border border-stone-700 hover:border-stone-500 rounded-full px-3 py-1.5">
-              Model: <span className="text-stone-200">{MODELS[model].label}</span> · change
-            </button>
-            {model === "custom" && (
-              <label className="text-[11px] text-stone-400 hover:text-stone-200 border border-stone-700 hover:border-stone-500 rounded-full px-3 py-1.5 cursor-pointer"
-                title="Load a different STL/OBJ in place of this one (same detail setting)">
-                <input type="file" accept=".stl,.obj" className="hidden"
-                  onChange={(e) => { const f = e.target.files?.[0]; if (f) importModel(f); e.target.value = ""; }} />
-                Replace file…
-              </label>
-            )}
-            {model === "custom" && importMsg && <span className="text-[11px] text-amber-400">{importMsg}</span>}
+            <div className="flex items-center rounded-full border border-stone-700 overflow-hidden text-[11px]" title="Which model is on the bench">
+              <button onClick={() => setModel("male")}
+                className={"px-3 py-1.5 transition-colors " + (model === "male" ? "bg-stone-700 text-stone-100" : "text-stone-400 hover:text-stone-200")}>
+                Study figure
+              </button>
+              <button onClick={() => customReady && setModel("custom")}
+                title={customReady ? "Your imported model" : "Import an STL first"}
+                className={"px-3 py-1.5 transition-colors " + (model === "custom" ? "bg-stone-700 text-stone-100" : customReady ? "text-stone-400 hover:text-stone-200" : "text-stone-600 cursor-default")}>
+                Your model
+              </button>
+            </div>
+            <label className="flex items-center gap-1 text-[11px] text-stone-400 hover:text-stone-200 border border-stone-700 hover:border-stone-500 rounded-full px-3 py-1.5 cursor-pointer"
+              title="Load an STL or OBJ from your bench — it becomes “Your model”">
+              <input type="file" accept=".stl,.obj" className="hidden"
+                onChange={(e) => { const f = e.target.files?.[0]; if (f) importModel(f); e.target.value = ""; }} />
+              <Upload size={12} /> Import STL
+            </label>
+            <select value={detail} onChange={(e) => setDetail(+e.target.value)} title="Import detail — Full renders the actual STL on the GPU"
+              className="bg-stone-900 border border-stone-700 rounded-full text-[11px] text-stone-400 px-2 py-1.5">
+              <option value={3400}>Standard</option>
+              <option value={8000}>High</option>
+              <option value={14000}>Ultra</option>
+              <option value={500000}>Full</option>
+            </select>
+            {importMsg && <span className="text-[11px] text-amber-400">{importMsg}</span>}
           </div>
         </div>
         <p className="text-stone-400 text-[13px] max-w-2xl">
@@ -2187,64 +1999,59 @@ export default function App() {
             <div ref={figRef} className="relative rounded-xl border border-stone-700/60 p-3"
               style={{ background: "radial-gradient(120% 90% at 50% 0%, #20241b, #141611 75%)" }}>
               {zonePaint && (
-                <div className="absolute top-2 left-2 right-2 z-20 flex flex-wrap items-center gap-1">
-                  {zoneNames.map((nm, zi) => (
-                    <button key={zi} onClick={() => setActiveZone(zi)} aria-pressed={activeZone === zi}
-                      className={"flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] border " +
-                        (activeZone === zi ? "border-lime-400 text-stone-100 bg-stone-900/90" : "border-stone-600 text-stone-300 bg-stone-900/70 hover:border-stone-400")}>
-                      <span className="w-2.5 h-2.5 rounded-full" style={{ background: dispRamps[zi][Math.floor(dispRamps[zi].length / 2)] }} />
-                      {nm}
-                    </button>
-                  ))}
-                  {only3d && (
+                <div className="absolute top-2 left-2 right-2 z-20">
+                  <div className="inline-flex flex-wrap items-center gap-1 max-w-full rounded-xl border border-stone-700 bg-stone-900/85 px-2 py-1.5">
+                    {zoneNames.map((nm, zi) => (
+                      <button key={zi} onClick={() => setActiveZone(zi)} aria-pressed={activeZone === zi}
+                        className={"flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] border " +
+                          (activeZone === zi ? "border-lime-400 text-stone-100" : "border-transparent text-stone-300 hover:border-stone-500")}>
+                        <span className="w-2.5 h-2.5 rounded-full" style={{ background: dispRamps[zi][Math.floor(dispRamps[zi].length / 2)] }} />
+                        {nm}
+                      </button>
+                    ))}
+                    <span className="w-px h-4 bg-stone-700 mx-1" />
                     <button onClick={() => setZoneMode(zoneMode === "patch" ? "brush" : "patch")}
-                      title="Switch between auto fill and brush"
-                      className="px-2 py-1 rounded-full text-[10px] border border-stone-600 text-stone-300 bg-stone-900/70 hover:border-stone-400">
+                      title={zoneMode === "patch" ? "Auto fill: a click grabs the whole smooth patch. Switch to brush." : "Brush: drag paints under the cursor. Switch to auto fill."}
+                      className="px-2 py-1 rounded-full text-[10px] border border-transparent text-stone-300 hover:border-stone-500">
                       {zoneMode === "patch" ? "auto fill" : "brush"}
                     </button>
-                  )}
+                    {zoneMode === "brush" && (
+                      <input type="range" min={8} max={60} value={brushSize} onChange={(e) => setBrushSize(+e.target.value)}
+                        title="Brush size" className="w-16 accent-lime-500" />
+                    )}
+                    <button onClick={() => setMirrorOn(!mirrorOn)} aria-pressed={mirrorOn}
+                      title="Mirror: also paint each face's twin across the centerline"
+                      className={"px-2 py-1 rounded-full text-[10px] border " +
+                        (mirrorOn ? "border-lime-400 text-lime-300" : "border-transparent text-stone-300 hover:border-stone-500")}>
+                      mirror
+                    </button>
+                    <button onClick={undoZone} title="Undo the last stroke (Ctrl+Z)"
+                      className="px-2 py-1 rounded-full text-[10px] border border-transparent text-stone-300 hover:border-stone-500">
+                      undo
+                    </button>
+                    <span className="w-px h-4 bg-stone-700 mx-1" />
+                    <button onClick={() => setZonePaint(false)} title="Stop painting zones — drag orbits again"
+                      className="px-2 py-1 rounded-full text-[10px] border border-lime-500/60 text-lime-300">
+                      done
+                    </button>
+                  </div>
                 </div>
               )}
               {only3d && MESH3D[model] ? (
-                <Model3D mesh={MESH3D[model]} L={L} ramp={ramp} mode={stage.mode} isoTier={stage.iso}
-                  tierKeys={tierKeys} glazeOn={glazeOn} glazeLayers={glazeLayers} pooling={pooling} valueMode={valueMode}
-                  sprayOn={sprayActive} focus={focus} sprayColor={sprayColor}
+                <Model3D mesh={MESH3D[model]} L={L} ramp={ramp}
+                  mode={zonePaint ? "paint" : stage.mode} isoTier={zonePaint ? null : stage.iso}
+                  tierKeys={tierKeys} glazeOn={zonePaint ? false : glazeOn} glazeLayers={glazeLayers} pooling={pooling}
+                  valueMode={zonePaint ? false : valueMode}
+                  sprayOn={zonePaint ? false : sprayActive} focus={focus} sprayColor={sprayColor}
                   orbOn={orbOn} Lorb={Lorb} orbColor={orbColor} orbInt={orbInt}
-                  zoneRamps={zoneRamps} zoneArr={zoneArrFor(model)} zoneVer={zoneVer} zoneMetals={zoneMetals}
+                  zoneRamps={viewRamps} zoneArr={zoneArrFor(model)} zoneVer={zoneVer} zoneMetals={zoneMetals}
                   onPickFace={zonePaint && zoneMode === "patch" ? pickFace : null}
                   brushSize={zonePaint && zoneMode === "brush" ? brushSize : 0}
-                  onBrushFaces={zonePaint && zoneMode === "brush" ? brushFaces : null} />
-              ) : (
-                <>
-                  <div className="grid grid-cols-2 gap-2">
-                    {views.filter((v) => v.key !== "top").map((v) => (
-                      <FigureView key={v.key} label={v.label} regions={v.regions} L={L} ramp={ramp}
-                        mode={stage.mode} isoTier={stage.iso} tierKeys={tierKeys}
-                        glazeOn={glazeOn} glazeLayers={glazeLayers} pooling={pooling} valueMode={valueMode}
-                        sprayOn={sprayActive} focus={focus} sprayColor={sprayColor}
-                        orbOn={orbOn} Lorb={Lorb} orbColor={orbColor} orbInt={orbInt}
-                        zoneRamps={zoneRamps} zoneMap={zoneMap2d[model]?.[v.key]} zoneMetals={zoneMetals}
-                        onPickRegion={zonePaint ? pickRegion(v.key) : null}
-                        svgExtra="lg:max-h-[27vh]" />
-                    ))}
-                  </div>
-                  {views.find((v) => v.key === "top") && (
-                    <div className="mt-2 pt-2 border-t border-stone-700/40">
-                      <div className="mx-auto" style={{ width: "70%" }}>
-                        <FigureView label="Top (from above)" regions={views.find((v) => v.key === "top").regions}
-                          viewBox="0 0 220 150" L={L} ramp={ramp}
-                          mode={stage.mode} isoTier={stage.iso} tierKeys={tierKeys}
-                          glazeOn={glazeOn} glazeLayers={glazeLayers} pooling={pooling} valueMode={valueMode}
-                          sprayOn={sprayActive} focus={focus} sprayColor={sprayColor}
-                          orbOn={orbOn} Lorb={Lorb} orbColor={orbColor} orbInt={orbInt}
-                          zoneRamps={zoneRamps} zoneMap={zoneMap2d[model]?.top} zoneMetals={zoneMetals}
-                          onPickRegion={zonePaint ? pickRegion("top") : null}
-                          svgExtra="lg:max-h-[15vh]" />
-                      </div>
-                    </div>
-                  )}
-                </>
-              )}
+                  onBrushFaces={zonePaint && zoneMode === "brush" ? brushFaces : null}
+                  onStrokeEnd={endStroke} smoothShade={smoothShade}
+                  rimOn={rimOn} Lrim={Lrim} rimColor={rimColor} rimInt={rimInt} primerColor={primerColor} lightOn={lightOn} lightInt={lightInt}
+                  onToggleSmooth={() => setSmoothShade((v) => !v)} />
+              ) : null}
               <div className="mt-3 pt-3 border-t border-stone-700/50 flex items-center justify-between gap-2">
                 <button onClick={() => setValueMode((v) => !v)} aria-pressed={valueMode}
                   title="Squint test: show value (greyscale) instead of color"
@@ -2263,6 +2070,18 @@ export default function App() {
                       </>}
                 </span>
               </div>
+              <div className="mt-2 pt-2 border-t border-stone-700/40">
+                <div className="flex flex-wrap gap-1">
+                  {stages.map((s, i) => (
+                    <button key={s.id} onClick={() => setActiveStage(s.id)} aria-pressed={s.id === activeStage}
+                      className={"px-2 py-1 rounded-full text-[10px] border " +
+                        (s.id === activeStage ? "border-lime-400 text-stone-100 bg-stone-800/80" : done[s.id] ? "border-stone-700/60 text-stone-600 line-through" : "border-stone-700 text-stone-300 hover:border-stone-500")}>
+                      {i + 1} · {s.name}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[11px] text-stone-400 mt-1.5 leading-snug">{stage.note}</p>
+              </div>
               {!sprayActive && stage.mode !== "paint" && (
                 <p className="mt-2 text-[10.5px] text-stone-500 leading-snug">
                   {stage.mode === "prime"
@@ -2276,60 +2095,18 @@ export default function App() {
           {/* ===== CONTROLS PANE (scrolls internally on desktop) ===== */}
           <div className="flex-1 w-full min-w-0 lg:h-full lg:overflow-y-auto lg:pr-2 controls-scroll">
 
-        {/* ===== RECIPE BUILDER ===== */}
-        <Section icon={<Palette size={15} />} title="Recipe" {...sec("recipe")}>
-          <div className="flex flex-wrap items-center gap-4 mb-4">
-            <label className="flex items-center gap-2 text-sm text-stone-300">
-              Base color
-              <input type="color" value={base} onChange={(e) => pickBase(e.target.value)}
-                className="w-9 h-9 rounded cursor-pointer bg-transparent border border-stone-700" />
-            </label>
-            <div className="flex items-center gap-1 text-sm text-stone-300">
-              Steps
-              {[3, 4, 5].map((n) => (
-                <button key={n} onClick={() => pickSteps(n)}
-                  className={"w-8 h-8 rounded-md text-sm border " + (numSteps === n ? "border-stone-300 text-white" : "border-stone-700 text-stone-400")}>
-                  {n}
-                </button>
-              ))}
-            </div>
-            <button onClick={() => setRamp(generateRamp(base, numSteps))}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-md text-xs border border-stone-700 hover:border-stone-500 text-stone-300">
-              <RotateCcw size={13} /> Auto-generate
-            </button>
-          </div>
-          <div className="flex flex-wrap gap-3">
-            {ramp.slice(0, tiers.length).map((c, i) => (
-              <div key={i} className="flex flex-col items-center gap-1">
-                <label className="cursor-pointer">
-                  <Hex color={c} size={42} />
-                  <input type="color" value={c} aria-label={"Set " + tiers[i].label + " color"}
-                    onChange={(e) => editStep(i, e.target.value)} className="sr-only" />
-                </label>
-                <span className="text-[10px] uppercase tracking-wider text-stone-400">{tiers[i].label}</span>
-                <span className="text-[9px] text-stone-600">{c}</span>
-              </div>
-            ))}
-          </div>
-          <p className="text-[11px] text-stone-500 mt-3 max-w-xl">
-            Highlights step lighter and warm toward yellow; the shadow steps darker and cools toward blue — that
-            temperature shift is what reads as real light rather than a flat tint. Tap any swatch to match a specific paint.
-          </p>
-        </Section>
-
-        {/* ===== ZONES ===== */}
-        <Section icon={<Layers size={15} />} title="Zones (materials)" {...sec("zones")}>
+        {/* ===== COLORS & MATERIALS ===== */}
+        <Section icon={<Palette size={15} />} title="Colors & materials" {...sec("colors")}>
           <p className="text-[11px] text-stone-500 mb-3 leading-snug">
-            Give cloak, armor, and skin their own color schemes — all shaded by the same light.
-            Pick a zone, switch on <b className="text-stone-300">Assign</b>, then click the figure to paint parts into it.
-            The <b className="text-stone-300">matte / steel / gold</b> toggle turns a zone into NMM — metal painted with
-            matte paint: harder contrast, a bright ping, sky color on up-facing planes and ground color underneath.
+            Every material on the mini gets its own scheme, shaded by the same light. Pick a row and
+            paint it onto the model; the <b className="text-stone-300">matte / steel / gold</b> toggle
+            turns a material into NMM metal.
           </p>
           <div className="space-y-1.5 mb-3">
             {zoneNames.map((nm, zi) => (
               <div key={zi} className={"flex items-center gap-2 rounded-lg border px-2 py-1.5 " +
                 (activeZone === zi ? "border-stone-400 bg-stone-800/40" : "border-stone-700/50")}>
-                <button onClick={() => setActiveZone(zi)} aria-pressed={activeZone === zi}
+                <button onClick={() => { setActiveZone(zi); setZonePaint(true); }} aria-pressed={activeZone === zi}
                   className={"w-3.5 h-3.5 rounded-full flex-none border " + (activeZone === zi ? "bg-lime-500 border-lime-500" : "border-stone-600")}
                   title={"Make “" + nm + "” the active zone"} />
                 <input type="color" value={zi === 0 ? base : extraZones[zi - 1].base}
@@ -2352,10 +2129,10 @@ export default function App() {
               </div>
             ))}
           </div>
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2 mb-4">
             {extraZones.length < 3 && (
               <button onClick={addZone} className="flex items-center gap-1 px-3 py-1.5 rounded-md text-xs border border-stone-700 hover:border-stone-500 text-stone-300">
-                <Plus size={12} /> Add zone
+                <Plus size={12} /> Add material
               </button>
             )}
             {extraZones.length > 0 && (
@@ -2366,43 +2143,141 @@ export default function App() {
             <button onClick={() => setZonePaint(!zonePaint)} aria-pressed={zonePaint}
               className={"px-3 py-1.5 rounded-md text-xs border transition-colors " +
                 (zonePaint ? "border-lime-500 text-lime-300 bg-lime-500/10" : "border-stone-700 text-stone-300 hover:border-stone-500")}>
-              Assign: {zonePaint ? "on — click the figure" : "off"}
+              {zonePaint ? "Painting zones — controls are on the figure" : "Paint zones on the model…"}
             </button>
-            {zonePaint && only3d && (
-              <div className="flex items-center rounded-md border border-stone-700 overflow-hidden text-xs">
-                <button onClick={() => setZoneMode("patch")} aria-pressed={zoneMode === "patch"}
-                  title="A click grabs the whole smooth patch around the face you hit — fast for big areas"
-                  className={"px-3 py-1.5 " + (zoneMode === "patch" ? "bg-stone-700 text-stone-100" : "text-stone-400 hover:text-stone-200")}>
-                  Auto fill
-                </button>
-                <button onClick={() => setZoneMode("brush")} aria-pressed={zoneMode === "brush"}
-                  title="Drag to paint exactly the faces under the brush — for edges auto fill can't see, like hair against skin"
-                  className={"px-3 py-1.5 " + (zoneMode === "brush" ? "bg-stone-700 text-stone-100" : "text-stone-400 hover:text-stone-200")}>
-                  Brush
-                </button>
-              </div>
-            )}
+            <button onClick={undoZone} title="Undo the last zone stroke (Ctrl+Z)"
+              className="px-3 py-1.5 rounded-md text-xs border border-stone-700 hover:border-stone-500 text-stone-400">
+              Undo
+            </button>
             <button onClick={clearZones} className="px-3 py-1.5 rounded-md text-xs border border-stone-700 hover:border-stone-500 text-stone-400">
-              Clear this model
+              Clear assignments
             </button>
           </div>
-          {zonePaint && only3d && zoneMode === "brush" && (
-            <div className="mt-2 max-w-[220px]">
-              <Slider label="Brush size" value={brushSize} min={8} max={60} onChange={setBrushSize} suffix="px" />
+          <div className="flex flex-wrap items-center gap-4 mb-4 pt-3 border-t border-stone-800">
+            <div className="flex items-center gap-1 text-sm text-stone-300">
+              Value steps
+              {[3, 4, 5].map((n) => (
+                <button key={n} onClick={() => pickSteps(n)}
+                  className={"w-8 h-8 rounded-md text-sm border " + (numSteps === n ? "border-stone-300 text-white" : "border-stone-700 text-stone-400")}>
+                  {n}
+                </button>
+              ))}
             </div>
-          )}
-          {zonePaint && <p className="text-[11px] text-amber-300/80 mt-2">
-            Assigning to <b>{zoneNames[activeZone]}</b>
-            {only3d
-              ? (zoneMode === "brush"
-                  ? " — drag paints under the brush (orbiting is paused; turn Assign off to rotate)."
-                  : " — drag still orbits; a click (no drag) auto-fills the smooth patch.")
-              : " — click any facet in any view."}
-            {" "}Set the active zone to Main to un-assign.</p>}
+            <button onClick={() => setRamp(generateRamp(base, numSteps))}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-md text-xs border border-stone-700 hover:border-stone-500 text-stone-300">
+              <RotateCcw size={13} /> Auto-generate ramp
+            </button>
+          </div>
+          <div className="flex flex-wrap gap-3">
+            {ramp.slice(0, tiers.length).map((c, i) => (
+              <div key={i} className="flex flex-col items-center gap-1">
+                <label className="cursor-pointer">
+                  <Hex color={c} size={42} />
+                  <input type="color" value={c} aria-label={"Set " + tiers[i].label + " color"}
+                    onChange={(e) => editStep(i, e.target.value)} className="sr-only" />
+                </label>
+                <span className="text-[10px] uppercase tracking-wider text-stone-400">{tiers[i].label}</span>
+                <span className="text-[9px] text-stone-600">{c}</span>
+              </div>
+            ))}
+          </div>
+          <p className="text-[11px] text-stone-500 mt-3 max-w-xl">
+            Highlights step lighter and warm toward yellow; the shadow steps darker and cools toward blue — that
+            temperature shift is what reads as real light rather than a flat tint. Tap any swatch to match a specific paint.
+          </p>
+          <div className="pt-3 mt-4 border-t border-stone-800">
+            <label className="flex items-center gap-2 text-xs text-stone-300 cursor-pointer">
+              <input type="checkbox" checked={glazeOn} onChange={(e) => setGlazeOn(e.target.checked)} />
+              Glaze preview <span className="text-stone-500">— a thin wash over whatever's shown: unifying over paint, slapchop over the Zenithal step</span>
+            </label>
+            {glazeOn && (
+              <div className="mt-2 flex items-center gap-3">
+                <input type="color" value={(glazeLayers[0] || {}).color || "#7a5a3a"}
+                  onChange={(e) => setGlazeLayers([{ color: e.target.value, opacity: (glazeLayers[0] || {}).opacity ?? 0.3 }])}
+                  className="w-8 h-8 flex-none bg-transparent border-0 cursor-pointer" title="Glaze color" />
+                <div className="flex-1">
+                  <Slider label="Glaze strength" value={Math.round(((glazeLayers[0] || {}).opacity ?? 0.3) * 100)} min={5} max={95}
+                    onChange={(v) => setGlazeLayers([{ color: (glazeLayers[0] || {}).color || "#7a5a3a", opacity: v / 100 }])} suffix="%" />
+                </div>
+              </div>
+            )}
+          </div>
         </Section>
 
+        {/* ===== COLOR WHEEL ===== */}
+        <Section icon={<Lightbulb size={15} />} title="Wheel & cohesion" {...sec("wheel")}>
+          <div className="flex flex-col sm:flex-row gap-6 items-start">
+            <ColorWheel ramp={ramp} accents={accents} base={base} onPickBase={pickBase}
+              previewAccent={previewAccent} onSelectAccent={setPreviewAccent} />
+            <div className="flex-1 w-full">
+              <p className="text-[11px] text-stone-400 mb-1 max-w-md">
+                White dots are your ramp; the dotted line is its hue drift. Two separate actions:
+              </p>
+              <ul className="text-[11px] text-stone-500 mb-3 max-w-md space-y-0.5">
+                <li><span className="text-stone-300">Tap the wheel</span> → sets your <b>base</b> hue (rebuilds the ramp).</li>
+                <li><span className="text-stone-300">Tap a card below</span> → pins that exact color as an <b>accent</b>.</li>
+              </ul>
+              <div className="grid sm:grid-cols-2 gap-2">
+                {suggestions.map((s) => {
+                  const pinned = accents.includes(s.hex);
+                  return (
+                    <button key={s.label} onClick={() => addAccent(s.hex)}
+                      className={"flex items-start gap-3 text-left p-2.5 rounded-lg border " +
+                        (pinned ? "border-yellow-500/70 bg-stone-800/40" : "border-stone-700/70 hover:border-stone-500")}>
+                      <span className="w-7 h-7 rounded-md flex-none mt-0.5" style={{ background: s.hex }} />
+                      <span>
+                        <span className="text-xs font-semibold text-stone-200 flex items-center gap-1">
+                          {s.label} {pinned ? <Check size={11} /> : <Plus size={11} />}
+                        </span>
+                        <span className="block text-[10.5px] text-stone-500 leading-snug">{s.why}</span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {accents.length > 0 && (
+                <div className="mt-3">
+                  <span className="text-[10px] uppercase tracking-wider text-stone-500">Accents — tap to preview, ✕ to remove</span>
+                  <div className="mt-1.5 flex items-center gap-2 flex-wrap">
+                    {accents.map((c, i) => (
+                      <span key={i} className="relative inline-flex">
+                        <button onClick={() => setPreviewAccent(c)} title="preview in recesses" aria-label={"Preview accent " + c}
+                          className={"w-7 h-7 rounded-md border " + (c === previewAccent ? "border-yellow-400 ring-2 ring-yellow-400/40" : "border-stone-600")}
+                          style={{ background: c }} />
+                        <button aria-label={"Remove accent " + c} onClick={() => { setAccents((a) => a.filter((_, k) => k !== i)); if (c === previewAccent) setPreviewAccent(null); }}
+                          className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-stone-900 border border-stone-600 text-stone-400 hover:text-red-400 text-[9px] leading-none flex items-center justify-center">✕</button>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* accent-in-recesses lesson — previews live on the model itself */}
+          <div className="mt-5 pt-4 border-t border-stone-700/50">
+            <h3 className="text-xs uppercase tracking-wider text-stone-300 mb-1">
+              Accent in the recesses
+              {previewAccent && <span className="ml-2 normal-case tracking-normal text-amber-300/90">— previewing on the model</span>}
+            </h3>
+            <p className="text-[11.5px] text-stone-400 leading-relaxed max-w-xl">
+              {previewAccent
+                ? "The model's shadow tiers are showing your accent glazed in thin — the classic 'complementary in the recesses' move. A touch of the opposite hue in shadow makes the base read richer without repainting anything. Tap the accent again to turn it off."
+                : "Pin or tap an accent to preview it glazed into the shadow tiers on the model. The complementary is the one to try first: a thin wash of the opposite hue in the deepest recesses adds life that a darker version of the base color can't."}
+            </p>
+            <p className="text-[11px] text-stone-500 mt-2 max-w-xl">
+              <b className="text-stone-400">Unifying glaze:</b> a single thin wash of one hue over the <i>whole</i> model ties
+              unrelated parts together — a warm tone to harmonize, a cool one to push everything back.
+            </p>
+          </div>
+        </Section>
+
+
         {/* ===== LIGHT CONTROLS ===== */}
-        <Section icon={<Sun size={15} />} title="Light direction" {...sec("light")}>
+        {(lightOn || rimOn || orbOn) && (
+        <Section icon={<Sun size={15} />} title="Extras" {...sec("light")}>
+          {lightOn && (
           <div className="flex flex-col sm:flex-row gap-5 items-start">
             <div className="flex flex-col items-center">
               <svg viewBox="0 0 52 52" className="w-[68px] h-[68px]">
@@ -2416,6 +2291,11 @@ export default function App() {
             <div className="flex-1 w-full space-y-3">
               <Slider label="Orbit (around figure)" value={az} min={0} max={360} onChange={setAz} suffix="°" />
               <Slider label="Height (low → overhead)" value={el} min={-20} max={90} onChange={setEl} suffix="°" />
+              <Slider label="Intensity (soft → harsh)" value={Math.round(lightInt * 100)} min={20} max={150} onChange={(v) => setLightInt(v / 100)} suffix="%" />
+              <label className="flex items-center gap-2 text-xs text-stone-300 cursor-pointer pt-1">
+                <input type="checkbox" checked={zenithalOn} onChange={(e) => setZenithalOn(e.target.checked)} />
+                Zenithal underpainting <span className="text-stone-500">— sprayed light map; adds a step after priming</span>
+              </label>
               <div className="flex flex-wrap gap-2 pt-1">
                 {[["Zenithal", 20, 86], ["Front", 0, 32], ["Left", 90, 32], ["Right", 270, 32], ["Back", 180, 32]]
                   .map(([t, a, e]) => (
@@ -2427,7 +2307,64 @@ export default function App() {
               </div>
             </div>
           </div>
+          )}
+                {rimOn && (
+                  <div className="pt-2 border-t border-stone-800">
+                    <div className="text-xs text-stone-300">Rim light <span className="text-stone-500">— aimed separately, tinted cool (toggle in Extras)</span></div>
+                    {true && (
+                    <div className="mt-2 space-y-3">
+                      <Slider label="Rim orbit" value={rimAz} min={0} max={360} onChange={setRimAz} suffix="°" />
+                      <Slider label="Rim height" value={rimEl} min={-20} max={90} onChange={setRimEl} suffix="°" />
+                      <div className="flex items-center gap-3">
+                        <input type="color" value={rimColor} onChange={(e) => setRimColor(e.target.value)}
+                          className="w-8 h-8 flex-none bg-transparent border-0 cursor-pointer" title="Rim color" />
+                        <div className="flex-1">
+                          <Slider label="Rim strength" value={rimInt * 100} min={0} max={100} onChange={(v) => setRimInt(v / 100)} suffix="%" />
+                        </div>
+                      </div>
+                    </div>
+                    )}
+                  </div>
+                )}
+              {orbOn && (
+              <div className="pt-2 mt-1 border-t border-stone-800">
+          <p className="text-[11px] text-stone-500 mb-3 leading-snug">
+            A second, colored light — a power weapon, a gem, glowing eyes — at its own bearing around the model. It{" "}
+            <span className="text-stone-300">adds</span> on top of the main light: planes facing the orb pick up its
+            color and brighten; planes facing away are untouched. Aim it independently to see the glow on its own.
+          </p>
+          {orbOn && (
+            <div className="mt-4 flex flex-col sm:flex-row gap-5 items-start">
+              <div className="flex flex-col items-center">
+                <svg viewBox="0 0 52 52" className="w-[68px] h-[68px]">
+                  <circle cx="26" cy="26" r="22" fill="#1d201a" stroke="#34382c" />
+                  <text x="26" y="9" textAnchor="middle" className="fill-stone-500" style={{ fontSize: 6 }}>FRONT</text>
+                  <text x="26" y="49" textAnchor="middle" className="fill-stone-500" style={{ fontSize: 6 }}>BACK</text>
+                  <circle cx={orbCx} cy={orbCy} r="5" fill={orbColor} stroke="#ffffff66" />
+                </svg>
+                <div className="text-[10px] text-stone-500 mt-1">orb</div>
+              </div>
+              <div className="flex-1 w-full space-y-3">
+                <Slider label="Orb bearing (around figure)" value={orbAz} min={0} max={360} onChange={setOrbAz} suffix="°" />
+                <Slider label="Orb height (below → above)" value={orbEl} min={-20} max={90} onChange={setOrbEl} suffix="°" />
+                <Slider label="Glow strength" value={orbInt * 100} min={0} max={100} onChange={(v) => setOrbInt(v / 100)} suffix="%" />
+                <label className="flex items-center gap-2 text-[11px] text-stone-400">
+                  Glow color
+                  <input type="color" value={orbColor} onChange={(e) => setOrbColor(e.target.value)} aria-label="Glow color"
+                    className="w-8 h-8 rounded cursor-pointer bg-transparent border border-stone-700" />
+                </label>
+                <p className="text-[11px] text-amber-300/80 leading-snug">
+                  <b className="text-amber-300">Watch for:</b> keep it subtle — real OSL is dim and falls off fast. Too
+                  strong and it overpowers your value ramp; the giveaway of a fake glow is lighting planes that can't
+                  actually "see" the orb.
+                </p>
+              </div>
+            </div>
+          )}
+              </div>
+              )}
         </Section>
+        )}
 
         <Section icon={<Palette size={15} />} title="Real paints" {...sec("paints")}>
           <div className="flex gap-1 mb-3 flex-wrap">
@@ -2503,6 +2440,18 @@ export default function App() {
                         <span className="inline-block text-[9px] uppercase tracking-wider text-stone-500 border border-stone-700 rounded px-1.5 py-0.5">whole model — no single tier</span>
                       )}
                       <p className="text-xs text-stone-300 leading-snug">{s.note}</p>
+                      {s.id === "prime" && (
+                        <label className="flex items-center gap-2 text-[11px] text-stone-400 pt-1">
+                          Primer color
+                          <input type="color" value={primerColor} onChange={(e) => setPrimerColor(e.target.value)}
+                            aria-label="Primer color" className="w-7 h-7 rounded cursor-pointer bg-transparent border border-stone-700" />
+                          {[["#1b1b1b", "Black"], ["#7a7a7a", "Grey"], ["#f2f2f2", "White"], ["#5b3a2e", "Brown"]].map(([c, nm]) => (
+                            <button key={c} onClick={() => setPrimerColor(c)} title={nm} aria-label={nm + " primer"}
+                              className={"w-5 h-5 rounded-full border " + (primerColor === c ? "border-lime-400" : "border-stone-600")}
+                              style={{ background: c }} />
+                          ))}
+                        </label>
+                      )}
                       <p className="text-[11px] text-amber-300/80 leading-snug"><b className="text-amber-300">Watch for:</b> {s.watch}</p>
                     </div>
                   )}
@@ -2512,7 +2461,7 @@ export default function App() {
           </div>
         </Section>
 
-        {method === "airbrush" && (
+        {method === "airbrush" && lightOn && (
         <Section icon={<Droplets size={15} />} title="Spray cone" {...sec("spray")}>
           <p className="text-[11px] text-stone-500 mb-3 leading-snug">
             Your light direction <span className="text-stone-300">is the nozzle</span>. Turn this on to see where paint
@@ -2545,183 +2494,8 @@ export default function App() {
         </Section>
         )}
 
-        {/* ===== GLOW SOURCE (object-source lighting) ===== */}
-        <Section icon={<Lightbulb size={15} />} title="Glow source (object light)" {...sec("glow")}>
-          <p className="text-[11px] text-stone-500 mb-3 leading-snug">
-            A second, colored light — a power weapon, a gem, glowing eyes — at its own bearing around the model. It{" "}
-            <span className="text-stone-300">adds</span> on top of the main light: planes facing the orb pick up its
-            color and brighten; planes facing away are untouched. Aim it independently to see the glow on its own.
-          </p>
-          <div className="flex items-center gap-3 mb-1">
-            <button onClick={() => setOrbOn((v) => !v)} role="switch" aria-checked={orbOn} aria-label="Toggle object-source glow"
-              className={"relative w-12 h-6 rounded-full transition-colors flex-none " + (orbOn ? "bg-sky-600" : "bg-stone-700")}>
-              <span className={"absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all " + (orbOn ? "left-6" : "left-0.5")} />
-            </button>
-            <div className="text-sm text-stone-200 font-medium">{orbOn ? "Glow on" : "Glow off"}</div>
-          </div>
-          {orbOn && (
-            <div className="mt-4 flex flex-col sm:flex-row gap-5 items-start">
-              <div className="flex flex-col items-center">
-                <svg viewBox="0 0 52 52" className="w-[68px] h-[68px]">
-                  <circle cx="26" cy="26" r="22" fill="#1d201a" stroke="#34382c" />
-                  <text x="26" y="9" textAnchor="middle" className="fill-stone-500" style={{ fontSize: 6 }}>FRONT</text>
-                  <text x="26" y="49" textAnchor="middle" className="fill-stone-500" style={{ fontSize: 6 }}>BACK</text>
-                  <circle cx={orbCx} cy={orbCy} r="5" fill={orbColor} stroke="#ffffff66" />
-                </svg>
-                <div className="text-[10px] text-stone-500 mt-1">orb</div>
-              </div>
-              <div className="flex-1 w-full space-y-3">
-                <Slider label="Orb bearing (around figure)" value={orbAz} min={0} max={360} onChange={setOrbAz} suffix="°" />
-                <Slider label="Orb height (below → above)" value={orbEl} min={-20} max={90} onChange={setOrbEl} suffix="°" />
-                <Slider label="Glow strength" value={orbInt * 100} min={0} max={100} onChange={(v) => setOrbInt(v / 100)} suffix="%" />
-                <label className="flex items-center gap-2 text-[11px] text-stone-400">
-                  Glow color
-                  <input type="color" value={orbColor} onChange={(e) => setOrbColor(e.target.value)} aria-label="Glow color"
-                    className="w-8 h-8 rounded cursor-pointer bg-transparent border border-stone-700" />
-                </label>
-                <p className="text-[11px] text-amber-300/80 leading-snug">
-                  <b className="text-amber-300">Watch for:</b> keep it subtle — real OSL is dim and falls off fast. Too
-                  strong and it overpowers your value ramp; the giveaway of a fake glow is lighting planes that can't
-                  actually "see" the orb.
-                </p>
-              </div>
-            </div>
-          )}
-        </Section>
 
-        <Section icon={<Droplets size={15} />} title="Paint behavior" {...sec("behavior")}>
-          <div className="flex items-center gap-3 mb-1">
-            <button onClick={() => setGlazeOn((v) => !v)} role="switch" aria-checked={glazeOn} aria-label="Toggle glaze mode"
-              className={"relative w-12 h-6 rounded-full transition-colors flex-none " + (glazeOn ? "bg-sky-600" : "bg-stone-700")}>
-              <span className={"absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all " + (glazeOn ? "left-6" : "left-0.5")} />
-            </button>
-            <div>
-              <div className="text-sm text-stone-200 font-medium">{glazeOn ? "Glaze (transparent layers)" : "Opaque (flat coats)"}</div>
-              <div className="text-[11px] text-stone-500">{glazeOn ? "Layers build up and let what's underneath show through." : "Each plane is one solid color — the original model."}</div>
-            </div>
-          </div>
 
-          {glazeOn && (
-            <div className="mt-4 space-y-4">
-              <Slider label="Recess pooling (thin on highlights, builds in shadow)" value={pooling * 100} min={0} max={90}
-                onChange={(v) => setPooling(v / 100)} suffix="%" />
-
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-[11px] text-stone-400">Layers (bottom → top)</span>
-                  <div className="flex items-center gap-1">
-                    {[2, 3, 4, 5].map((n) => (
-                      <button key={n} onClick={() => resizeGlaze(n)}
-                        className={"w-7 h-7 rounded-md text-xs border " + (glazeLayers.length === n ? "border-stone-300 text-white" : "border-stone-700 text-stone-400")}>
-                        {n}
-                      </button>
-                    ))}
-                    <button onClick={() => setGlazeLayers(defaultGlaze(ramp, glazeLayers.length))}
-                      className="ml-1 flex items-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] border border-stone-700 hover:border-stone-500 text-stone-300">
-                      <RotateCcw size={12} /> Colors from recipe
-                    </button>
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  {glazeLayers.map((L, i) => (
-                    <div key={i} className="flex items-center gap-3 bg-stone-900/40 rounded-lg p-2">
-                      <label className="cursor-pointer flex-none">
-                        <span className="block w-8 h-8 rounded-md border border-stone-600" style={{ background: L.color }} />
-                        <input type="color" value={L.color} className="sr-only" aria-label={"Glaze layer " + (i + 1) + " color"}
-                          onChange={(e) => setGlazeLayers((ls) => ls.map((x, k) => k === i ? { ...x, color: e.target.value } : x))} />
-                      </label>
-                      <div className="flex-1">
-                        <div className="flex justify-between text-[10px] text-stone-500 mb-1">
-                          <span>Layer {i + 1} opacity</span><span className="tabular-nums text-stone-300">{Math.round(L.opacity * 100)}%</span>
-                        </div>
-                        <input type="range" min={5} max={100} value={L.opacity * 100} className="w-full accent-sky-500"
-                          onChange={(e) => setGlazeLayers((ls) => ls.map((x, k) => k === i ? { ...x, opacity: Number(e.target.value) / 100 } : x))} />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <p className="text-[11px] text-stone-500 max-w-xl">
-                Each layer is see-through and stacks over the one below. A low-opacity layer lets the underlayer show
-                through — which is exactly why a thin coat over a different base reads as a blended shadow rather than a
-                flat new color. Turn pooling up and glazes thin out on the lit planes and gather in the recesses, the
-                way an airbrushed glaze actually behaves.
-              </p>
-            </div>
-          )}
-        </Section>
-
-        {/* ===== COLOR WHEEL ===== */}
-        <Section icon={<Lightbulb size={15} />} title="Wheel & cohesion" {...sec("wheel")}>
-          <div className="flex flex-col sm:flex-row gap-6 items-start">
-            <ColorWheel ramp={ramp} accents={accents} base={base} onPickBase={pickBase}
-              previewAccent={previewAccent} onSelectAccent={setPreviewAccent} />
-            <div className="flex-1 w-full">
-              <p className="text-[11px] text-stone-400 mb-1 max-w-md">
-                White dots are your ramp; the dotted line is its hue drift. Two separate actions:
-              </p>
-              <ul className="text-[11px] text-stone-500 mb-3 max-w-md space-y-0.5">
-                <li><span className="text-stone-300">Tap the wheel</span> → sets your <b>base</b> hue (rebuilds the ramp).</li>
-                <li><span className="text-stone-300">Tap a card below</span> → pins that exact color as an <b>accent</b>.</li>
-              </ul>
-              <div className="grid sm:grid-cols-2 gap-2">
-                {suggestions.map((s) => {
-                  const pinned = accents.includes(s.hex);
-                  return (
-                    <button key={s.label} onClick={() => addAccent(s.hex)}
-                      className={"flex items-start gap-3 text-left p-2.5 rounded-lg border " +
-                        (pinned ? "border-yellow-500/70 bg-stone-800/40" : "border-stone-700/70 hover:border-stone-500")}>
-                      <span className="w-7 h-7 rounded-md flex-none mt-0.5" style={{ background: s.hex }} />
-                      <span>
-                        <span className="text-xs font-semibold text-stone-200 flex items-center gap-1">
-                          {s.label} {pinned ? <Check size={11} /> : <Plus size={11} />}
-                        </span>
-                        <span className="block text-[10.5px] text-stone-500 leading-snug">{s.why}</span>
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-
-              {accents.length > 0 && (
-                <div className="mt-3">
-                  <span className="text-[10px] uppercase tracking-wider text-stone-500">Accents — tap to preview, ✕ to remove</span>
-                  <div className="mt-1.5 flex items-center gap-2 flex-wrap">
-                    {accents.map((c, i) => (
-                      <span key={i} className="relative inline-flex">
-                        <button onClick={() => setPreviewAccent(c)} title="preview in recesses" aria-label={"Preview accent " + c}
-                          className={"w-7 h-7 rounded-md border " + (c === previewAccent ? "border-yellow-400 ring-2 ring-yellow-400/40" : "border-stone-600")}
-                          style={{ background: c }} />
-                        <button aria-label={"Remove accent " + c} onClick={() => { setAccents((a) => a.filter((_, k) => k !== i)); if (c === previewAccent) setPreviewAccent(null); }}
-                          className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-stone-900 border border-stone-600 text-stone-400 hover:text-red-400 text-[9px] leading-none flex items-center justify-center">✕</button>
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* glaze preview */}
-          <div className="mt-5 pt-4 border-t border-stone-700/50 flex flex-col sm:flex-row gap-4 items-center sm:items-start">
-            <div className="w-[110px] flex-none">
-              <GlazePreview accent={previewAccent} ramp={ramp} L={L} tierKeys={tierKeys} regions={previewRegions} />
-            </div>
-            <div className="flex-1">
-              <h3 className="text-xs uppercase tracking-wider text-stone-300 mb-1">Accent in the recesses</h3>
-              <p className="text-[11.5px] text-stone-400 leading-relaxed max-w-md">
-                {previewAccent
-                  ? "This is your selected accent glazed thin into the deepest shadow zones only — the classic 'complementary in the recesses' move. A touch of the opposite hue in shadow makes the base color read richer without repainting anything."
-                  : "Pin or tap an accent to see it glazed into the shadow zones here. The complementary is the one to try first: a thin wash of the opposite hue in the deepest recesses adds life that a darker version of the base color can't."}
-              </p>
-              <p className="text-[11px] text-stone-500 mt-2 max-w-md">
-                <b className="text-stone-400">Unifying glaze:</b> a single thin wash of one hue over the <i>whole</i> model ties
-                unrelated parts together — a warm tone to harmonize, a cool one to push everything back.
-              </p>
-            </div>
-          </div>
-        </Section>
 
         {/* ===== SAVE / LOAD ===== */}
         <Section icon={<Save size={15} />} title="Recipes" {...sec("recipes")}>
@@ -2781,77 +2555,4 @@ function Slider({ label, value, min, max, onChange, suffix }) {
   );
 }
 
-function MiniFigure({ regions, ramp, L }) {
-  return (
-    <svg viewBox="0 0 200 460" className="w-full h-auto">
-      {regions.map((r, i) => {
-        const b = brightness(r.n, L, r.ao);
-        return <polygon key={i} points={r.p} fill={ramp[tierIndex(b, ramp.length)]}
-          stroke="#00000033" strokeWidth="0.6" strokeLinejoin="round" />;
-      })}
-    </svg>
-  );
-}
 
-function Chooser({ ramp, L, onPick, onImport, customReady, importMsg, detail, onDetail }) {
-  return (
-    <div className="min-h-screen w-full text-stone-200 flex flex-col items-center justify-center px-4 py-10"
-      style={{ background: "#141611", fontFamily: "Segoe UI, system-ui, sans-serif" }}>
-      <p className="text-[11px] tracking-[0.32em] uppercase text-stone-500 mb-1">Miniature painting · light & value</p>
-      <h1 className="text-3xl sm:text-4xl font-extrabold uppercase tracking-wide leading-none mb-2 text-center">
-        The <span style={{ color: ramp[ramp.length - 1] }}>Light</span> Bench
-      </h1>
-      <p className="text-stone-400 text-sm max-w-md text-center mb-8">
-        Work on the 3D study figure, or import the actual model from your bench —
-        the light, recipe, and steps work the same on both.
-      </p>
-      <div className="grid grid-cols-2 gap-4 w-full max-w-xl">
-        {Object.entries(MODELS).filter(([, m]) => !m.custom).map(([key, m]) => (
-          <button key={key} onClick={() => onPick(key)}
-            className="group rounded-xl border border-stone-700/70 hover:border-stone-400 bg-stone-900/30 p-4 transition-colors text-left">
-            <div className="h-40 flex items-center justify-center mb-3">
-              {m.views
-                ? <div className="w-[88px]"><MiniFigure regions={frontOf(m.views)} ramp={ramp} L={L} /></div>
-                : <div className="w-[118px]"><Model3D mesh={MESH3D[key]} L={L} ramp={ramp} mode="paint" noDrag initRot={{ yaw: -0.4, pitch: 0.08 }} /></div>}
-            </div>
-            <div className="text-sm font-semibold text-stone-100 group-hover:text-white">{m.label}</div>
-            <div className="text-[11px] text-stone-500 leading-snug mt-0.5">{m.blurb}</div>
-          </button>
-        ))}
-        <label className="group rounded-xl border border-dashed border-stone-600 hover:border-stone-400 bg-stone-900/30 p-4 transition-colors text-left cursor-pointer">
-          <input type="file" accept=".stl,.obj" className="hidden"
-            onChange={(e) => { const f = e.target.files?.[0]; if (f) onImport(f); e.target.value = ""; }} />
-          <div className="h-40 flex items-center justify-center mb-3">
-            {customReady
-              ? <div className="w-[118px]" title="Open your imported model"
-                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); onPick("custom"); }}>
-                  <Model3D mesh={MESH3D.custom} L={L} ramp={ramp} mode="paint" noDrag initRot={{ yaw: -0.4, pitch: 0.08 }} />
-                </div>
-              : <Upload size={40} className="text-stone-500 group-hover:text-stone-300 transition-colors" />}
-          </div>
-          <div className="text-sm font-semibold text-stone-100 group-hover:text-white">Import your model</div>
-          <div className="text-[11px] text-stone-500 leading-snug mt-0.5">
-            {customReady
-              ? "Click the figure to reopen it, or the card to load a different STL/OBJ."
-              : "Load an STL or OBJ of the mini on your bench — it's simplified so the planes read clearly."}
-          </div>
-          <div className="flex items-center gap-1 mt-2" onClick={(e) => e.preventDefault()}>
-            <span className="text-[10px] uppercase tracking-wider text-stone-600 mr-1">Detail</span>
-            {[["Standard", 3400], ["High", 8000], ["Ultra", 14000], ["Full", 500000]].map(([lb, n]) => (
-              <button key={n} type="button" onClick={(e) => { e.stopPropagation(); onDetail(n); }}
-                title={n >= 100000 ? "The actual STL on the GPU — up to 500,000 triangles" : n.toLocaleString() + " faces max — more detail, but rotation gets heavier"}
-                className={"px-2 py-0.5 rounded-full text-[10px] border transition-colors " +
-                  (detail === n ? "border-stone-300 text-stone-100 bg-stone-700/60" : "border-stone-700 text-stone-500 hover:text-stone-300")}>
-                {lb}
-              </button>
-            ))}
-          </div>
-          {importMsg && <div className="text-[11px] text-amber-400 leading-snug mt-1">{importMsg}</div>}
-        </label>
-      </div>
-      <p className="text-[11px] text-stone-600 mt-8 max-w-md text-center">
-        Color schemes and zone materials carry over when you switch between them.
-      </p>
-    </div>
-  );
-}
