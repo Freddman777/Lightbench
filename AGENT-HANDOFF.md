@@ -43,6 +43,7 @@ Everything runs off ONE engine: a 3D light vector is dotted against a per-plane 
 5. Assemble `index.html`: one file with `<style>{styles.css + extras}</style>`, `<div id="root">`, `<script>{app.js}</script>`. Extras include body bg `#141611`, range height, and the `.controls-scroll` thin-scrollbar rules.
 - Result ≈ 250 KB, fully self-contained, no network.
 - **Why the storage swap:** `localStorage` is blocked inside the Claude artifact renderer but works in a standalone browser file (what we ship), so the browser build uses it.
+6. **PWA (installable app):** the build also injects a `<link rel="manifest">`, theme-color/apple meta tags, and a service-worker registration into `index.html`, and generates `sw.js` (precache + stale-while-revalidate; cache name carries a hash of the built HTML so every rebuild ships as a new version). Static PWA files live in the repo: `manifest.json` and `icons/` (PNGs rendered from `icons/icon.svg` / `icons/maskable.svg` via `rsvg-convert`). The SW registration is guarded by a `location.protocol` check, so **double-clicking `index.html` still works exactly as before** — install/offline only activates when the folder is hosted over HTTPS (or localhost). To ship the PWA, host `index.html` + `manifest.json` + `sw.js` + `icons/` together; the single-file `.html` deliverable is unchanged for everyone else.
 
 ---
 
