@@ -2,119 +2,75 @@
 
 **A miniature-painting planner for light, color, and layering.**
 
-The Light Bench helps you plan how to paint a miniature *before* you pick up the airbrush. You set a light direction, build a color scheme, and the tool shows you — from five angles at once (front, both sides, back, and top-down) — exactly where the highlights and shadows fall and what color goes where.
+The Light Bench helps you plan how to paint a miniature *before* you pick up the brush or airbrush. You set a light direction, build a color scheme, and a **3D figure you can rotate with your finger or mouse** shows you exactly where the highlights and shadows fall and what color goes where — on a realistic study figure, or on **your own model imported from an STL/OBJ file**.
 
-It is a **teaching tool, not a photo of your exact model**. The figures are kept simple and blocky on purpose, so you can read the *planes* (which surfaces face the light) and apply that thinking to any miniature on your table.
+It is a **teaching tool, not a photo of your exact model**. The point is reading the *planes* — which surfaces face the light — and applying that thinking to anything on your table.
 
 ---
 
 ## Getting started
 
-Just **double-click the `.html` file** — it runs in any web browser, with no internet needed. Your saved schemes stay in that browser on that computer.
+- **Double-click `index.html`** — it runs in any browser, fully offline, no install needed.
+- Or, if it's hosted on the web, **install it as an app**: on desktop Chrome/Edge click the install icon in the address bar; on Android use the install banner; on iPhone/iPad use Safari's Share → *Add to Home Screen*. Installed, it works offline and opens fullscreen like a native app.
+
+Your saved schemes stay in that browser (see **Recipes** below for moving them between devices).
 
 ---
+
+## The bench
+
+You open straight onto the **study figure** — a realistic human figure, decimated to clean planes. Drag to rotate, pinch or scroll to zoom (shift-drag pans on desktop). The **faceted / smooth** button switches between plane-reading facets and smooth shading.
+
+**Import STL** loads your own model instead: pick a detail level (Standard/High/Ultra simplify the mesh so planes read clearly; **Full** renders the actual file on the GPU, up to ~500k faces), and it becomes "**Your model**" — switchable with the study figure at any time. The import is remembered, including any materials you paint onto it.
 
 ## Brush or airbrush?
 
-Up in the top corner there's a **Brush / Airbrush** switch. It sets which *workflow* the app coaches you through — it doesn't change the figure or the colors, just the advice.
+The **Airbrush** chip at the top sets which *workflow* the app coaches you through — it doesn't change the figure or colors, just the advice. In airbrush mode every step's notes switch to spray logic (thinning, PSI, distance, angle, and the airbrush-specific failure modes), and the **Spray cone** section unlocks: your light direction becomes the nozzle, and the figure shows *coverage* — which planes the spray actually hits — instead of value. Planes facing away stay bare primer; that hard cutoff is the lesson the soft light model can't teach.
 
-- **Brush** (default) — the classic order, with brush-painter notes and warnings.
-- **Airbrush** — every step's instructions switch to spray logic: thinning, pressure (PSI), spray distance and angle, plus the airbrush-specific failure modes (pooling and spider-webbing from spraying too close, chalkiness from paint too thick or pressure too high, the zenithal getting buried, tip-dry spitting into a fine pass). The Edge and Details steps tell you to put the airbrush down and pick up a brush — the honest hybrid reality.
+## Colors & materials
 
-Airbrush mode also unlocks the **Spray cone** (see below). The choice is remembered with your saved recipes.
+Every material on the mini (skin, cloak, armor…) gets its own color scheme, all shaded by the same light. **Paint zones on the model** lets you assign faces directly — tap to grab a whole smooth patch, or brush over faces, with mirror mode and Ctrl+Z undo. The **matte / steel / gold** toggle turns any material into NMM (non-metallic metal) shading, with its compressed midtones and specular ping.
 
----
+Pick a base color and 3–5 value steps and the tool builds the ladder using the rule real painters use: **highlights get lighter and warmer, shadows darker and cooler**. Tap any swatch to match a paint you own.
 
-## The sections, one by one
+## Light
 
-### 1. Choose a model
-When you open the app you pick what you're painting — a **Bust**, a **Standing figure**, a **Rifle stance** (arms raised holding a rifle at an angle, which adds asymmetry and angled planes), or a **Dual wield** stance (arms thrown out wide, a raised pistol in one hand and a blade in the other, on a bent-knee braced stance — the most extreme limb angles and the most varied held-object surfaces). This just decides which shape you see. Everything else works the same on any model, and a color scheme you build carries over between them. Once you're in, a small **"Model: … · change"** button up top lets you switch without losing your colors.
+Orbit, height, and intensity sliders aim a single light; presets jump to Zenithal/Front/Left/Right/Back. The **Light direction** chip turns directional light off entirely to preview a flat paint scheme. **Zenithal underpainting** adds the sprayed-light-map step after priming. Extras add a cool **rim light** and an **object-source glow** (OSL) — a second colored light for power weapons, gems, glowing eyes.
 
-### 2. The views
-This is the *output*, not a control. You see the model from the **front, both sides, the back, and from directly above** at the same time. The four side views sit in a grid; the top-down view sits in its own panel below them, like an orthographic drawing sheet. As you change the light or the colors, every view updates together — so you can see that lighting the front means the back falls into shadow, and that an overhead (zenithal) light makes the whole top view glow. On a computer the figure stays put while the controls scroll; on a phone it sits on top.
+## Wheel & cohesion
 
-> The top-down view is the most abstract — from straight above, a figure is mostly head-and-shoulder shapes. That's normal; it's there to show how much light flat, upward-facing surfaces catch.
+Your ramp is plotted on a color wheel so you can see its hue drift. Tap the wheel to set your base hue; tap a suggestion card (Complementary, Analogous, Triadic) or an accent dot on the wheel to preview that accent glazed into the shadow tiers on the model itself — the classic "opposite color in the shadows" trick before committing.
 
-### 3. Light direction
-Two sliders aim a single light:
+## Glaze preview
 
-- **Orbit** — move the light around the figure (front / side / back)
-- **Height** — raise it overhead or drop it low
+A thin wash over whatever's shown — unifying over paint, slapchop over the zenithal step. Pick the glaze color and strength; it thins on the lit tops and pools in the recesses, the way thin coats really behave. The "· glaze" tag under the figure shows when it's active.
 
-Push Height all the way up for a **zenithal** light (straight down): tops bright, undersides dark. Quick buttons (Zenithal, Front, Left, Right, Back) jump to common setups.
+## Real paints
 
-> Answers the question: **where does light land?**
+Every color in your scheme is matched to the nearest real hobby paint (Citadel, Vallejo, Army Painter — filterable) by color distance, with an honesty rating from "spot on" to "mix to match". It's a shopping list, not gospel: start from that pot and adjust.
 
-#### Spray cone (airbrush mode only)
+## Steps
 
-In Airbrush mode, a **Spray cone** panel appears here. Its whole idea: **your light direction is the nozzle.** Turn on *"Show where the spray lands"* and the figures stop showing value and start showing **coverage** — which planes the spray actually hits from where you're aiming.
+The real painting order — Prime (your primer color), optional Zenithal, Base coats, then Shade / Highlights (when the light is on), Details & accents, Varnish. Tap a step and the figure *isolates* where it goes, with a note and a **"Watch for:"** warning of that stage's classic mistake. Check steps off as you go; notes rewrite themselves for brush or airbrush.
 
-- Planes angled toward the nozzle get coated in the current step's color; planes facing away stay **bare primer** (dark). That hard cutoff is the lesson the soft light can't teach — undersides stay bare until you aim from below, which is exactly why you reposition the model or the nozzle mid-session.
-- The **Cone focus** slider runs from *wide / feathered* (paint bleeds onto angled planes — soft and forgiving, but more overspray) to *tight / focused* (only what directly faces the nozzle — clean, but slow and easy to leave gaps).
-- It follows the **Steps**: tap Base, then Highlight, and the coverage shows each pass's footprint in that pass's color. Aim with the same Orbit / Height sliders above.
+## Recipes (save / load)
 
-> Answers the question: **where does paint land?**
+Name a scheme and **Save**. It remembers colors, light, glaze, method, spray, glow/rim — everything except which model it's on, so one scheme works on any figure. **Export recipes** downloads them all as a JSON file and **Import recipes** merges them back in — that's how schemes move between your phone and desktop. Your whole session (model, step, materials painted onto the figure) also restores automatically next time you open the app.
 
-### 4. Recipe (your colors)
-Pick a base color and how many steps you want (3, 4, or 5). The tool builds the full ladder — shadow, base, midtone(s), highlight — using the rule real painters use: **highlights get lighter and warmer** (toward yellow), **shadows get darker and cooler** (toward blue). That warm-to-cool shift is what makes paint look lit instead of flat.
-
-- Tap any swatch to change just that color (to match a paint you own).
-- **Auto-generate** rebuilds the ladder from your base.
-
-The light decides *which* band a surface is in; the recipe decides what *color* that band is.
-
-### 5. Paint behavior (opaque vs. glaze)
-A switch between two ways paint can sit on the model:
-
-- **Opaque** — each surface is one solid color. Simple and clear.
-- **Glaze** — see-through layers that stack, so the color underneath shows through, the way thin coats really behave.
-
-When Glaze is on you get:
-
-- **Recess pooling** — how much the glaze thins out on the bright tops and gathers in the recesses. Turn it up to make shadows show the underlayer coming through (a thin green over red reading as a warm shadow, for example). Turn it down for an even coat.
-- **Layers (2–5)** — each with its own opacity slider and color. Lower opacity = more of the layer below shows through. **"Colors from recipe"** resets the layer colors to your current scheme.
-
-> **Note:** Glaze only changes the *paint* steps. The Prime (black) and Zenithal (grey) steps stay as they are, because those happen *before* any glaze. The little **"· glaze"** tag under the figure tells you when it's active.
-
-### 6. Wheel & cohesion
-Your color ladder is plotted on a color wheel so you can see its hue drift. Two separate actions, both labeled in the app:
-
-- **Tap the wheel** — set your base color (rebuilds the ladder)
-- **Tap a card** — pin a suggested accent color (it gets a gold ring)
-
-The suggestions (Complementary, Analogous, Triadic) are computed from your base to help the model stay cohesive. Below them, a small preview figure shows your chosen accent glazed into the shadow recesses — so you can see the classic "opposite color in the shadows" trick before committing.
-
-> Answers the question: **do my colors work together?**
-
-### 7. Steps
-The real-world painting order: **Prime → Zenithal → Base → Shade → Highlights → Details → Varnish.** Tap any step and the figure *isolates* where that step goes (everything else dims), with a short note and a **"Watch for:"** warning of the common mistake at that stage. Check off steps as you finish. The notes and warnings rewrite themselves depending on the **Brush / Airbrush** switch at the top.
-
-### 8. Recipes (save / load)
-Name a scheme and **Save** it. It remembers your colors, light position, glaze settings, brush/airbrush mode, spray cone settings, and checklist, and survives closing the browser. Schemes are independent of the model, so the same one works on a bust or a full figure.
-
-> Saved per browser, per computer — they won't follow you to another device.
+**Export PNG** produces a reference card — the figure as shown, the value ramp, the paint shopping list, accents, and light settings — to take to the bench. On phones it opens the share sheet.
 
 ---
 
 ## How you'd use it — a worked example
 
-**Goal:** plan a green-skinned orc **bust**, lit from above, with warm highlights and a richer shadow than a plain dark green.
+**Goal:** plan a green-skinned orc, lit from above, with warm highlights and richer shadows than plain dark green.
 
-1. **Pick the model.** Open the app, click *Bust*. You now see the bust from four sides.
-
-2. **Set the light.** Click the *Zenithal* preset (or push Height to the top). Watch the tops of the head, shoulders, and chest brighten while the underside of the chin, the neck, and the lower chest fall into shadow. The top-down view should glow almost evenly — that's *why* zenithal priming works. That's your light map.
-
-3. **Build the color.** In Recipe, set the base to a mid green. Choose 5 steps. The tool fills in a dark cool-green shadow, your green base, two lighter/warmer mids, and a pale warm highlight. Glance at the four views — the highlight color should be sitting on the brow, cheekbones, and shoulder tops.
-
-4. **Check it on the wheel.** Open Wheel & Cohesion. See your greens drift slightly toward yellow as they lighten — that's the warm-highlight rule working. Tap the *Complementary* card (a red/magenta) to pin it as an accent, and look at the small preview: a touch of that opposite color in the deepest recesses makes the green read richer. That's your shadow accent planned.
-
-5. **Try glaze layering.** In Paint Behavior, flip the toggle to *Glaze*. Switch to the *Highlight* step (so you're looking at paint, not the grey zenithal). Now slide **Recess pooling** up and down: at higher pooling, the glaze thins on the lit tops and builds in the recesses, so the shadows deepen and warm while the highlights stay clean. This is the same effect as brushing a thin green over a warmer base and letting it pool in the cracks. Set the layer opacities until the shadows look right to you.
-
-6. **Walk the steps.** Open Steps and tap through them in order. On *Shade*, the figure shows only the recesses — that's where your shadow color (and that complementary accent) goes. On *Highlight*, only the top planes light up — that's where the pale warm green goes. Read each *Watch for:* note so you avoid the common mistake before you make it for real.
-
-7. **Save it.** In Recipes, name it "Orc Flesh" and Save. Next time you open the app it's there — and you can load it onto the Standing figure too if you paint a full orc later.
-
-Now you have a plan: which light, which colors in which order, where each one goes, and how the shadows should behave — all before opening a single pot.
+1. **Set the light.** Tap the *Zenithal* preset. Rotate the figure and watch tops brighten while the jaw, neck, and undersides fall into shadow. That's your light map.
+2. **Build the color.** Set the base to a mid green, 5 steps. The tool fills in a cool dark shadow, your base, warmer mids, and a pale warm highlight. Rotate to see the highlight sit on the brow, shoulders, and chest planes.
+3. **Check the wheel.** Your greens drift toward yellow as they lighten — the warm-highlight rule working. Tap the *Complementary* card and watch that red glaze into the shadow tiers on the model: that's your shadow accent planned.
+4. **Add a material.** *Add material*, name it "Cloak", pick a color, then *Paint zones on the model* and tap the areas it covers. Both materials now shade under the same light.
+5. **Walk the steps.** Tap through Prime → Base coats → Shade → Highlight. Each step isolates its own territory and warns you about its classic mistake.
+6. **Save and take it to the bench.** Save as "Orc Flesh", then *Export PNG* for a reference card with the ramp and the nearest real paints to buy.
 
 ---
 
@@ -126,11 +82,20 @@ Now you have a plan: which light, which colors in which order, where each one go
 | **Base coat** | The main midtone color over everything. |
 | **Shade** | Darker color pushed into the recesses (the valleys). |
 | **Highlight** | Lighter color on the top planes that face the light. |
+| **Edge highlight** | Hairline lines on the hardest edges catching the light (5-step ramps). |
 | **Glaze** | A thin, see-through layer of color over what's already there. |
+| **NMM** | Non-metallic metal: matte paint imitating metal's compressed midtones and specular ping. |
+| **OSL** | Object-source lighting: a glow cast by something on the model (gem, blade, eyes). |
+| **Rim light** | A second, usually cooler light from behind/beside that outlines the form. |
 | **Recess** | A valley or crevice on the model (where shadow gathers). |
 | **Accent** | A small contrasting color used sparingly for interest. |
 | **Complementary** | The color opposite yours on the wheel; great in shadows. |
 | **Spray cone** | The airbrush's spray, aimed like the light; shows where paint lands rather than where light falls. |
 | **Coverage** | Which planes a spray pass actually hits. Planes facing away from the nozzle stay bare. |
-| **Overspray** | Paint drifting past the intended area — more with a wide/feathered cone, less with a tight one. |
 | **Tip-dry** | Paint drying on the needle tip and spitting specks into a pass; clear it and thin the mix. |
+
+---
+
+## For developers
+
+`light-bench.jsx` is the source of truth; `npm install && npm run build` produces the self-contained `index.html` plus the PWA files (`sw.js`, `manifest.json`, `icons/`). See `AGENT-HANDOFF.md` for the full engineering handbook.

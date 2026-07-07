@@ -55,8 +55,9 @@ function mix(hexA, hexB, t) {
   return "#" + m.map((v) => v.toString(16).padStart(2, "0")).join("");
 }
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+// Touch-first device? (guarded: jsdom used by the verify step has no matchMedia)
+const COARSE = typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches;
 const clamp01 = (v) => clamp(v, 0, 1);
-function lerpHue(a, b, t) { let d = (((b - a) % 360) + 540) % 360 - 180; return ((a + d * t) % 360 + 360) % 360; }
 function smoothstep(e0, e1, x) { const t = clamp01((x - e0) / (e1 - e0)); return t * t * (3 - 2 * t); }
 
 /* ============================== RAMP ============================== */
@@ -172,28 +173,6 @@ function nearestPaint(hex, brand) { // brand: "C" | "V" | "A" | "" (any)
   return best && { brand: best[0], name: best[1], hex: best[2], dE: Math.sqrt(bestD) };
 }
 const matchQuality = (dE) => (dE < 5 ? "spot on" : dE < 12 ? "close" : "mix to match");
-
-function defaultGlaze(ramp, count) {
-  const out = [];
-  for (let i = 0; i < count; i++) {
-    const t = count === 1 ? 1 : i / (count - 1);
-    const idx = clamp(Math.round(1 + t * (ramp.length - 2)), 1, ramp.length - 1);
-    out.push({ color: ramp[idx], opacity: 0.5 });
-  }
-  return out;
-}
-function glazeColor(b, layers, pooling) {
-  let c = valueGrey(b);
-  for (const L of layers) {
-    const eff = clamp(L.opacity * (1 - pooling * b), 0, 1);
-    c = mix(c, L.color, eff);
-  }
-  return c;
-}
-/* Each region: world-space surface normal [x,y,z].
-   +z = front, +x = the figure's "left-view" side, +y = up. */
-
-/* ---------------- BUST (blocky, generic) ---------------- */
 
 const MODELS = {
   male: { label: "3D figure", blurb: "A realistic figure you rotate in 3D — drag to read light across real anatomy.", only3d: true },
@@ -313,9 +292,6 @@ function buildStages(n, method = "brush", zenithal = false, lit = true) {
   return s;
 }
 
-/* ============================== FIGURE VIEW ============================== */
-// Centroid of a "x,y x,y …" polygon — used to place the light marker.
-
 /* ============================== 3D MODEL (no libraries) ==============================
    A blocky figure is a list of quad faces in world space (+x right, +y up, +z front).
    The camera orbits (yaw/pitch from drag); the LIGHT stays in world space, so rotating
@@ -329,53 +305,6 @@ const faceNormal = (f) => norm3(cross3(sub3(f[1], f[0]), sub3(f[2], f[0])));
 const centroid3 = (pts) => { const n = pts.length || 1; return [pts.reduce((s, p) => s + p[0], 0) / n, pts.reduce((s, p) => s + p[1], 0) / n, pts.reduce((s, p) => s + p[2], 0) / n]; };
 const rotY = (p, c, s) => [c * p[0] + s * p[2], p[1], -s * p[0] + c * p[2]];
 const rotX = (p, c, s) => [p[0], c * p[1] - s * p[2], s * p[1] + c * p[2]];
-// Orient every face of a convex part so its normal points away from the part's center —
-// makes winding bulletproof for boxes/prisms/segments at any orientation.
-function orientFaces(faces) {
-  const c = centroid3(faces.flat());
-  return faces.map((f) => (dot3(faceNormal(f), sub3(centroid3(f), c)) < 0 ? [...f].reverse() : f));
-}
-function box(cx, cy, cz, hx, hy, hz) {
-  const X = [cx - hx, cx + hx], Y = [cy - hy, cy + hy], Z = [cz - hz, cz + hz];
-  const c = (i, j, k) => [X[i], Y[j], Z[k]];
-  return orientFaces([
-    [c(0, 0, 1), c(1, 0, 1), c(1, 1, 1), c(0, 1, 1)], [c(1, 0, 0), c(0, 0, 0), c(0, 1, 0), c(1, 1, 0)],
-    [c(1, 0, 1), c(1, 0, 0), c(1, 1, 0), c(1, 1, 1)], [c(0, 0, 0), c(0, 0, 1), c(0, 1, 1), c(0, 1, 0)],
-    [c(0, 1, 1), c(1, 1, 1), c(1, 1, 0), c(0, 1, 0)], [c(0, 0, 0), c(1, 0, 0), c(1, 0, 1), c(0, 0, 1)],
-  ]);
-}
-// An N-sided (optionally tapered, elliptical) vertical prism. Faceted sides give normals
-// that fan around the form, so a single light reads the full value range across the mass.
-// czB/czT let a section lean front-to-back (z), which is what sculpts the side profile.
-function prism(cx, czB, czT, rxBot, rzBot, rxTop, rzTop, y0, y1, sides) {
-  const bot = [], top = [];
-  for (let i = 0; i < sides; i++) {
-    const a = (i / sides) * Math.PI * 2, ca = Math.cos(a), sa = Math.sin(a);
-    bot.push([cx + rxBot * ca, y0, czB + rzBot * sa]);
-    top.push([cx + rxTop * ca, y1, czT + rzTop * sa]);
-  }
-  const faces = [];
-  for (let i = 0; i < sides; i++) { const j = (i + 1) % sides; faces.push([bot[i], top[i], top[j], bot[j]]); }
-  faces.push(top); faces.push(bot);
-  return orientFaces(faces);
-}
-// A tapered prism between two arbitrary 3D points — for angled limbs and the rifle.
-function segment(p0, p1, r0, r1, sides) {
-  const d = norm3(sub3(p1, p0));
-  const helper = Math.abs(d[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
-  const u = norm3(cross3(helper, d)), v = norm3(cross3(d, u));
-  const a = [], b = [];
-  for (let i = 0; i < sides; i++) {
-    const t = (i / sides) * Math.PI * 2, ca = Math.cos(t), sa = Math.sin(t);
-    const off = [u[0] * ca + v[0] * sa, u[1] * ca + v[1] * sa, u[2] * ca + v[2] * sa];
-    a.push([p0[0] + r0 * off[0], p0[1] + r0 * off[1], p0[2] + r0 * off[2]]);
-    b.push([p1[0] + r1 * off[0], p1[1] + r1 * off[1], p1[2] + r1 * off[2]]);
-  }
-  const faces = [];
-  for (let i = 0; i < sides; i++) { const j = (i + 1) % sides; faces.push([a[i], b[i], b[j], a[j]]); }
-  faces.push(a); faces.push(b);
-  return orientFaces(faces);
-}
 // Cheap precomputed ambient occlusion: a face with lots of other geometry in front of it
 // (a crevice — armpit, neck, between legs) gets a lower ao, so recesses read dark. One-time.
 function computeAO(faces, norms) {
@@ -428,7 +357,9 @@ function parseSTL(buf) {
   const bytes = new Uint8Array(buf);
   if (bytes.length < 84) throw new Error("File too small to be an STL.");
   const dv = new DataView(buf);
-  const isBinary = 84 + dv.getUint32(80, true) * 50 === bytes.length; // size math beats the "solid" prefix check
+  // size math beats the "solid" prefix check; some exporters append trailing bytes, so allow >=
+  const nBin = dv.getUint32(80, true);
+  const isBinary = nBin > 0 && 84 + nBin * 50 <= bytes.length;
   const verts = [], faces = [];
   if (isBinary) {
     const n = dv.getUint32(80, true);
@@ -459,8 +390,11 @@ function parseOBJ(txt) {
       const p = line.split(/\s+/); verts.push([+p[1], +p[2], +p[3]]);
     } else if (line[0] === "f" && line[1] === " ") {
       const p = line.trim().split(/\s+/), idx = [];
-      for (let i = 1; i < p.length; i++) idx.push(parseInt(p[i].split("/")[0], 10) - 1);
-      faces.push(idx);
+      for (let i = 1; i < p.length; i++) {
+        const v = parseInt(p[i].split("/")[0], 10);
+        idx.push(v < 0 ? verts.length + v : v - 1); // negative = relative to the verts seen so far
+      }
+      if (idx.every((v) => v >= 0 && v < verts.length)) faces.push(idx);
     }
   }
   return { verts, faces };
@@ -630,6 +564,15 @@ function buildMeshTyped(pos) {
   }
   return { typed: true, pos, faceNormals, center, radius };
 }
+// Canvas fallback for a typed GPU soup: decimate to the Ultra cap and rebuild in the
+// faces/normals/ao shape the software renderer expects.
+function typedMeshForCanvas(mesh) {
+  const pos = decimateTypedPos(mesh.pos, 14000);
+  const faces = [];
+  for (let o = 0; o + 8 < pos.length; o += 9)
+    faces.push([[pos[o], pos[o + 1], pos[o + 2]], [pos[o + 3], pos[o + 4], pos[o + 5]], [pos[o + 6], pos[o + 7], pos[o + 8]]]);
+  return buildMesh(faces);
+}
 /* ---- IndexedDB: full-detail meshes and their zone maps don't fit localStorage. ---- */
 const idb = {
   _db: null,
@@ -647,63 +590,10 @@ const idb = {
   async del(k) { const db = await this.open(); return new Promise((res, rej) => { const tx = db.transaction("kv", "readwrite"); tx.objectStore("kv").delete(k); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); }); },
 };
 
-// ---- Generic croquis figures (~8 heads tall), higher facet counts + sculpted side
-//      profile (chest forward, seat back, posture S-curve via the prism z-lean) and
-//      proper hands/feet. Built from prisms (masses) + segments (limbs). +y up, +z front. ----
-// Foot: a heel/ankle block plus a flatter sole that extends forward to the toes.
-function foot(s) {
-  const x = 9 * s;
-  return [...box(x, -77, -2, 4.5, 6, 5), ...box(x, -81, 8, 4.2, 2.5, 11)];
-}
-// Hand: a small flattened block reading as a fist/paddle, hung just past the wrist point p.
-function hand(p) { return box(p[0], p[1] - 3, p[2], 3.4, 4.6, 2.6); }
-function bodyCore() {
-  return [
-    ...prism(0, 3, 4, 9, 10, 7, 8, 68, 88, 14),       // head (small ovoid, leaning forward)
-    ...prism(0, 1, 3, 5.5, 5.5, 6, 6, 58, 69, 10),    // neck
-    ...prism(0, -1, 3, 14, 10, 22, 13, 30, 58, 16),   // torso: waist(back) -> chest/shoulders(forward, deep)
-    ...prism(0, -3, -1, 17, 12, 14, 10, 4, 30, 16),   // pelvis: seat(back) -> waist
-    ...segment([8, 6, 1], [8, -36, -1], 10, 7, 10),       // thigh (knee tucks back)
-    ...segment([-8, 6, 1], [-8, -36, -1], 10, 7, 10),
-    ...segment([8, -36, -1], [9, -78, 3], 9, 4.5, 10),    // calf bulge -> ankle forward
-    ...segment([-8, -36, -1], [-9, -78, 3], 9, 4.5, 10),
-    ...foot(1), ...foot(-1),
-    ...box(0, -87, 2, 28, 4, 18),                     // plinth
-  ];
-}
-// Arm hanging at the side, slightly out & forward, hand near the upper thigh (s = +1/-1).
-function armDown(s) {
-  return [
-    ...segment([20 * s, 56, 1], [23 * s, 28, 2], 7, 5.5, 10),  // upper arm
-    ...segment([23 * s, 28, 2], [24 * s, 2, 3], 5.5, 3.6, 10), // forearm
-    ...hand([24 * s, 2, 3]),
-  ];
-}
-// Mesh construction (especially the O(n²) AO pass on the ~2.8k-face scan) is deferred
+// Mesh construction (especially the AO pass on the ~2.8k-face scan) is deferred
 // until a model is actually shown, so page load doesn't pay for meshes never opened.
-const buildStanding = () => buildMesh([...bodyCore(), ...armDown(1), ...armDown(-1)]);
-const buildGun = () => buildMesh([
-  ...bodyCore(),
-  // arms raised onto a rifle tilted up across the front (asymmetric, angled planes)
-  ...segment([20, 56, 2], [18, 36, 11], 7, 5.5, 10),  // right upper arm (out & forward)
-  ...segment([18, 36, 11], [14, 20, 17], 5.5, 4, 9),  // right forearm -> butt grip
-  ...hand([14, 19, 17]),
-  ...segment([-20, 56, 2], [-22, 48, 11], 7, 5.5, 10),// left upper arm (raised)
-  ...segment([-22, 48, 11], [-26, 50, 16], 5.5, 4, 9),// left forearm -> fore-grip
-  ...hand([-26, 49, 16]),
-  ...segment([16, 18, 17], [-32, 56, 13], 3.5, 2.5, 9), // rifle: low-right -> up-left, in front
-]);
-// Bust: the same head/neck on broad shoulders, cut at the chest on a base.
-const buildBust = () => buildMesh([
-  ...prism(0, 3, 4, 9, 10, 7, 8, 68, 88, 14),     // head
-  ...prism(0, 1, 3, 5.5, 5.5, 6, 6, 56, 69, 10),  // neck
-  ...prism(0, -1, 3, 16, 12, 24, 13, 30, 58, 16), // shoulders / upper chest (forward)
-  ...prism(0, -1, 0, 26, 16, 18, 13, 12, 30, 14), // chest (flares to the cut)
-  ...box(0, 5, 0, 30, 8, 20),                     // base
-]);
-
+// ("custom" is filled in directly by the STL/OBJ importer, not built here.)
 const MESH_BUILDERS = {
-  bust: buildBust, standing: buildStanding, gun: buildGun,
   male: () => buildMeshIndexed(MALE_VERTS, MALE_FACES), // real anatomy, decimated from the OBJ
 };
 const meshCache = {};
@@ -737,13 +627,28 @@ const Model3DCanvas = React.memo(function Model3DCanvas({ mesh, L, ramp, mode, i
     }
     if (hit.length) onBrushFaces(hit);
   };
+  const touches = useRef(new Map()); // live pointers — a second finger turns the gesture into pinch-zoom
   const onDown = (e) => {
     if (noDrag) return;
+    touches.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (touches.current.size === 2) {
+      const [a, b] = [...touches.current.values()];
+      drag.current = { pinch: true, dist: Math.hypot(a.x - b.x, a.y - b.y), z0: zoom };
+      e.currentTarget.setPointerCapture?.(e.pointerId); return;
+    }
     if (onBrushFaces && brushSize > 0 && e.button === 0) { drag.current = { painting: true }; e.currentTarget.setPointerCapture?.(e.pointerId); brushAt(e); return; }
     drag.current = { x: e.clientX, y: e.clientY, moved: false, ...rot }; e.currentTarget.setPointerCapture?.(e.pointerId);
   };
   const raf = useRef(0), pendingRot = useRef(null);
   const onMove = (e) => {
+    if (touches.current.has(e.pointerId)) touches.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (drag.current && drag.current.pinch) {
+      if (touches.current.size >= 2 && drag.current.dist > 0) {
+        const [a, b] = [...touches.current.values()];
+        setZoom(clamp(drag.current.z0 * (Math.hypot(a.x - b.x, a.y - b.y) / drag.current.dist), 0.6, 4));
+      }
+      return;
+    }
     if (ringRef.current && onBrushFaces && brushSize > 0) { // live brush cursor ring
       const cnv = canvasRef.current, r = cnv.getBoundingClientRect();
       const d = brushSize * 2 * (r.width / cnv.width), rs = ringRef.current.style;
@@ -759,6 +664,11 @@ const Model3DCanvas = React.memo(function Model3DCanvas({ mesh, L, ramp, mode, i
     if (!raf.current) raf.current = requestAnimationFrame(() => { raf.current = 0; setRot(pendingRot.current); });
   };
   const onUp = (e) => {
+    touches.current.delete(e.pointerId);
+    if (drag.current && drag.current.pinch) {
+      if (touches.current.size < 2) drag.current = null;
+      e.currentTarget.releasePointerCapture?.(e.pointerId); return;
+    }
     const wasPainting = drag.current && drag.current.painting;
     const wasClick = drag.current && !drag.current.painting && !drag.current.moved;
     drag.current = null; e.currentTarget.releasePointerCapture?.(e.pointerId);
@@ -1053,15 +963,20 @@ vec3 hsl2rgb(vec3 hsl){
   float c = (1.0-abs(2.0*hsl.z-1.0))*hsl.y;
   return (rgb-0.5)*c + hsl.z;
 }
+// sRGB <-> linear (exact Rec.709 transfer), so every blend below mixes actual light —
+// matching the canvas renderer's mix() instead of muddying gamma-encoded bytes.
+vec3 s2l(vec3 c){ return mix(c/12.92, pow((c+vec3(0.055))/1.055, vec3(2.4)), step(vec3(0.04045), c)); }
+vec3 l2s(vec3 c){ return mix(c*12.92, 1.055*pow(max(c,vec3(0.0)), vec3(1.0/2.4))-0.055, step(vec3(0.0031308), c)); }
+vec3 mixl(vec3 a, vec3 b, float t){ return l2s(mix(s2l(a), s2l(b), t)); }
 vec3 vGrey(float b){ return hsl2rgb(vec3(40.0/360.0, 0.04, 0.12 + b*0.78)); }
 vec3 nmm(int kind, float b, vec3 n){
   vec3 lo,mid,hi,spark,sky,earth;
   if (kind==2){ lo=vec3(.165,.102,.039); mid=vec3(.541,.353,.102); hi=vec3(.910,.722,.290); spark=vec3(1.,.965,.847); sky=vec3(1.,.929,.690); earth=vec3(.290,.180,.071); }
   else { lo=vec3(.078,.090,.114); mid=vec3(.290,.337,.400); hi=vec3(.659,.722,.800); spark=vec3(.957,.973,1.); sky=vec3(.761,.847,.918); earth=vec3(.180,.169,.149); }
   float t = smoothstep(0.2,0.9,b);
-  vec3 c = t<0.5 ? mix(lo,mid,t*2.0) : mix(mid,hi,(t-0.5)*2.0);
-  if (b>0.88) c = mix(c, spark, smoothstep(0.88,0.98,b));
-  if (n.y>0.0) c = mix(c, sky, n.y*0.35); else c = mix(c, earth, -n.y*0.45);
+  vec3 c = t<0.5 ? mixl(lo,mid,t*2.0) : mixl(mid,hi,(t-0.5)*2.0);
+  if (b>0.88) c = mixl(c, spark, smoothstep(0.88,0.98,b));
+  if (n.y>0.0) c = mixl(c, sky, n.y*0.35); else c = mixl(c, earth, -n.y*0.45);
   return c;
 }
 void main(){
@@ -1079,13 +994,13 @@ void main(){
   if (uFlat) { // flat paint scheme: base-coat color under a neutral viewing light, so the sculpt still reads
     vec3 baseC = uMode == 1 ? uPrimer : (uMetals[zone] > 0 ? nmm(uMetals[zone], 0.5, vec3(0.0, 0.0, 1.0)) : uRamps[zone*7 + 1]);
     float vb = (0.55 + 0.45 * clamp(vCNz, 0.0, 1.0)) * (0.7 + 0.3 * ao);
-    fill = baseC * vb;
+    fill = l2s(s2l(baseC) * vb); // linear-light mix from black, like the canvas path
     dim = false;
   }
   else if (uSprayOn) {
     float edge = -0.15 + uFocus*0.85;
     float cov = smoothstep(edge, edge + (0.6 - uFocus*0.48), d);
-    fill = mix(vec3(0.200,0.196,0.176), uSprayColor, cov); dim = false;
+    fill = mixl(vec3(0.200,0.196,0.176), uSprayColor, cov); dim = false;
   }
   else if (uMode == 1) fill = uPrimer;
   else if (uMode == 2) fill = vGrey(b);
@@ -1094,12 +1009,11 @@ void main(){
   if (uGlazeOn && uMode != 1 && !uSprayOn) { // glaze washes over whatever is underneath —
     for (int i = 0; i < 8; i++) { if (i >= uGlazeN) break; // materials normally, grey on the zenithal step
       float eff = clamp(uGlaze[i].a*(1.0 - uPooling*b), 0.0, 1.0);
-      fill = mix(fill, uGlaze[i].rgb, eff);
+      fill = mixl(fill, uGlaze[i].rgb, eff);
     }
   }
   if (uValueMode && uMode == 0 && !uSprayOn) {
-    vec3 lin = pow(fill, vec3(2.2));
-    fill = vec3(pow(dot(lin, vec3(0.2126,0.7152,0.0722)), 1.0/2.2));
+    fill = l2s(vec3(dot(s2l(fill), vec3(0.2126,0.7152,0.0722)))); // exact Rec.709 luminance, matching valueGreyOf
   }
   if (uOrbOn && !uSprayOn) fill = clamp(fill + uOrbColor * (uOrbInt * smoothstep(0.0,1.0,dot(n,uLorb))), 0.0, 1.0);
   if (uRimOn && !uSprayOn) fill = clamp(fill + uRimColor * (uRimInt * smoothstep(0.0,1.0,dot(n,uLrim))), 0.0, 1.0);
@@ -1199,7 +1113,14 @@ const ModelGL = React.memo(function ModelGL({ mesh, L, ramp, mode, isoTier, tier
       const U = (p) => { const c = {}; return (k) => (k in c ? c[k] : (c[k] = gl.getUniformLocation(p, k))); };
       S.current = { gl, g, prog, pick, line, vao, lineVao, ztex, texH, fbo, nrmBuf, nrmSmoothBuf: null, up: U(prog), upk: U(pick), ul: line ? U(line) : null, zver: -1, ztmp: new Uint8Array(ZTEX_W * texH * 4) };
     } catch (err) { S.current = null; onGLFail && onGLFail(); return; }
-    return () => { try { gl.getExtension("WEBGL_lose_context")?.loseContext(); } catch {} S.current = null; };
+    // A context lost mid-session (GPU reset, backgrounded mobile tab) would otherwise
+    // freeze the canvas forever — treat it like a failed init and fall back.
+    const onLost = (ev) => { ev.preventDefault(); S.current = null; onGLFail && onGLFail(); };
+    cnv.addEventListener("webglcontextlost", onLost);
+    return () => {
+      cnv.removeEventListener("webglcontextlost", onLost);
+      try { gl.getExtension("WEBGL_lose_context")?.loseContext(); } catch {} S.current = null;
+    };
   }, [mesh]);
 
   useEffect(() => { // faceted <-> smooth: swap which normal buffer feeds attribute 1
@@ -1350,8 +1271,15 @@ const ModelGL = React.memo(function ModelGL({ mesh, L, ramp, mode, isoTier, tier
     rs.display = "block"; rs.width = rs.height = d + "px";
     rs.left = (e.clientX - r.left - d / 2) + "px"; rs.top = (e.clientY - r.top - d / 2) + "px";
   };
+  const touches = useRef(new Map()); // live pointers — a second finger turns the gesture into pinch-zoom
   const onDown = (e) => {
     if (noDrag) return;
+    touches.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (touches.current.size === 2) {
+      const [a, b] = [...touches.current.values()];
+      drag.current = { pinch: true, dist: Math.hypot(a.x - b.x, a.y - b.y), z0: zoom };
+      e.currentTarget.setPointerCapture?.(e.pointerId); return;
+    }
     if (e.shiftKey || e.button === 1) { // pan: shift-drag or middle-drag
       e.preventDefault();
       drag.current = { panning: true, moved: true, x: e.clientX, y: e.clientY, px: pan.x, py: pan.y };
@@ -1363,6 +1291,14 @@ const ModelGL = React.memo(function ModelGL({ mesh, L, ramp, mode, isoTier, tier
   };
   const onMove = (e) => {
     moveRing(e);
+    if (touches.current.has(e.pointerId)) touches.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (drag.current && drag.current.pinch) {
+      if (touches.current.size >= 2 && drag.current.dist > 0) {
+        const [a, b] = [...touches.current.values()];
+        setZoom(clamp(drag.current.z0 * (Math.hypot(a.x - b.x, a.y - b.y) / drag.current.dist), 0.6, 4));
+      }
+      return;
+    }
     if (!drag.current) return;
     if (drag.current.panning) {
       const st = S.current, cnv = canvasRef.current; if (!st || !cnv) return;
@@ -1383,6 +1319,11 @@ const ModelGL = React.memo(function ModelGL({ mesh, L, ramp, mode, isoTier, tier
     if (!raf.current) raf.current = requestAnimationFrame(() => { raf.current = 0; setRot(pendingRot.current); });
   };
   const onUp = (e) => {
+    touches.current.delete(e.pointerId);
+    if (drag.current && drag.current.pinch) {
+      if (touches.current.size < 2) drag.current = null;
+      e.currentTarget.releasePointerCapture?.(e.pointerId); return;
+    }
     const wasPainting = drag.current && drag.current.painting;
     const wasClick = drag.current && !drag.current.painting && !drag.current.panning && !drag.current.moved;
     drag.current = null; e.currentTarget.releasePointerCapture?.(e.pointerId);
@@ -1416,7 +1357,9 @@ const ModelGL = React.memo(function ModelGL({ mesh, L, ramp, mode, isoTier, tier
             </button>
           ) : <span />}
           <span className="text-[9px] tracking-[0.2em] uppercase text-stone-500 text-center">
-            {onBrushFaces && brushSize > 0 ? "drag paints · right-drag rotate · shift pan · scroll zoom" : "drag rotate · shift-drag pan · scroll zoom"}
+            {COARSE
+              ? (onBrushFaces && brushSize > 0 ? "drag paints · two fingers zoom" : "drag rotate · pinch zoom")
+              : (onBrushFaces && brushSize > 0 ? "drag paints · right-drag rotate · shift pan · scroll zoom" : "drag rotate · shift-drag pan · scroll zoom")}
           </span>
           <span className="flex items-center gap-1 flex-none">
             <button onClick={() => setZoom((z) => clamp(z / 1.25, 0.6, 4))} aria-label="Zoom out"
@@ -1436,8 +1379,23 @@ const ModelGL = React.memo(function ModelGL({ mesh, L, ramp, mode, isoTier, tier
 // Public 3D view: WebGL when available, the canvas renderer as automatic fallback.
 function Model3D(props) {
   const [useGL, setUseGL] = useState(true);
+  // Typed GPU soups lack the faces/normals/ao arrays the software renderer reads —
+  // decimate a canvas-friendly copy (zone indices don't survive that, so zones drop).
+  const canvasMesh = useMemo(() => {
+    if (useGL || !props.mesh?.typed) return props.mesh;
+    try { return typedMeshForCanvas(props.mesh); } catch { return null; }
+  }, [useGL, props.mesh]);
   if (useGL) return <ModelGL {...props} onGLFail={() => setUseGL(false)} />;
-  return <Model3DCanvas {...props} zoneMap={props.zoneArr} />;
+  if (!canvasMesh) return (
+    <div className="p-6 text-xs text-stone-400 text-center">
+      3D view unavailable — WebGL failed and this import is too dense for the software renderer.
+      Re-import the model at Standard, High or Ultra detail.
+    </div>
+  );
+  return <Model3DCanvas {...props} mesh={canvasMesh}
+    zoneMap={canvasMesh === props.mesh ? props.zoneArr : null}
+    onPickFace={canvasMesh === props.mesh ? props.onPickFace : null}
+    onBrushFaces={canvasMesh === props.mesh ? props.onBrushFaces : null} />;
 }
 
 /* ============================== HEX SWATCH ============================== */
@@ -1461,16 +1419,20 @@ function ColorWheel({ ramp, accents, base, onPickBase, previewAccent, onSelectAc
   };
   const handle = useCallback((e) => {
     const rect = ref.current.getBoundingClientRect();
-    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-    const dx = clientX - (rect.left + rect.width / 2);
-    const dy = clientY - (rect.top + rect.height / 2);
-    const radius = rect.width / 2;
+    const scale = (C * 2) / rect.width; // CSS px -> wheel units, so clicks and dots share one geometry
+    const dx = (e.clientX - (rect.left + rect.width / 2)) * scale;
+    const dy = (e.clientY - (rect.top + rect.height / 2)) * scale;
+    if (onSelectAccent) { // tapping an accent dot previews it instead of moving the base hue
+      for (const c of accents) {
+        const { h, s } = hexToHsl(c); const [x, y] = pos(h, s);
+        if (Math.hypot(C + dx - x, C + dy - y) <= 11) { onSelectAccent(c === previewAccent ? null : c); return; }
+      }
+    }
     let h = Math.atan2(dx, -dy) * 180 / Math.PI - 90; h = ((h % 360) + 360) % 360;
-    const s = clamp(Math.hypot(dx, dy) / radius * 100, 6, 100);
+    const s = clamp(Math.hypot(dx, dy) / ringR * 100, 6, 100); // saturation against the ring, matching pos()
     const { l } = hexToHsl(base);
     onPickBase(hslToHex(h, s, l));
-  }, [base, onPickBase]);
+  }, [base, onPickBase, accents, previewAccent, onSelectAccent]);
 
   const points = ramp.map((c) => { const { h, s } = hexToHsl(c); return pos(h, s); });
   return (
@@ -1501,12 +1463,10 @@ function ColorWheel({ ramp, accents, base, onPickBase, previewAccent, onSelectAc
         <span className="inline-block w-2.5 h-2.5 rounded-full bg-white" /> ramp (dot size = value)
         <span className="inline-block w-2.5 h-2.5 rounded-full ml-2" style={{ background: "#facc15" }} /> accents
       </div>
-      <div className="mt-1 text-[10px] tracking-[0.16em] uppercase text-stone-500">tap wheel → set base hue</div>
+      <div className="mt-1 text-[10px] tracking-[0.16em] uppercase text-stone-500">tap wheel → set base hue · tap accent → preview</div>
     </div>
   );
 }
-
-/* recess-glaze preview: front view with an accent glazed into the shadow tier */
 
 /* ============================== APP ============================== */
 export default function App() {
@@ -1570,7 +1530,10 @@ export default function App() {
   const tiers = useMemo(() => tierMeta(numSteps), [numSteps]);
   const tierKeys = useMemo(() => tiers.map((t) => t.key), [tiers]);
   const stages = useMemo(() => buildStages(numSteps, method, zenithalOn && lightOn, lightOn), [numSteps, method, zenithalOn, lightOn]);
-  const stage = stages.find((s) => s.id === activeStage) || stages[0];
+  // If the active step vanished (step-count change, light toggled off), land on the first
+  // paint step — not Prime — and sync state so a chip stays highlighted.
+  const stage = stages.find((s) => s.id === activeStage) || stages.find((s) => s.mode === "paint") || stages[0];
+  useEffect(() => { if (stage && stage.id !== activeStage) setActiveStage(stage.id); }, [stage, activeStage]);
   const sprayActive = spray && method === "airbrush";
   const sprayColor = useMemo(() => {
     const k = stage && stage.iso;
@@ -1656,7 +1619,12 @@ export default function App() {
     setStatus("Undid zone stroke.");
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
-    const h = (e) => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && model) { e.preventDefault(); undoZone(); } };
+    const h = (e) => {
+      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "z") return;
+      const t = e.target; // leave text editing alone — native undo owns inputs
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      e.preventDefault(); undoZone();
+    };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
   }, [model, undoZone]);
@@ -1718,11 +1686,6 @@ export default function App() {
     setNumSteps(n); setRamp(generateRamp(base, n));
     setExtraZones((zs) => zs.map((z) => ({ ...z, ramp: generateRamp(z.base, n) }))); // keep every zone at the same step count
   };
-  // Changing the glaze layer count keeps the tuned layers — trim on shrink, append
-  // only the new slots on grow. "Colors from recipe" stays the explicit full reset.
-  const resizeGlaze = (n) => setGlazeLayers((ls) =>
-    n <= ls.length ? ls.slice(0, n) : [...ls, ...defaultGlaze(ramp, n).slice(ls.length)]);
-
   const save = async () => {
     const nm = name.trim(); if (!nm) { setStatus("Name it first."); return; }
     const recipe = { base, numSteps, ramp, accents, az, el, done, glazeOn, pooling, glazeLayers, method, spray, focus, orbOn, orbAz, orbEl, orbColor, orbInt, rimOn, rimAz, rimEl, rimColor, rimInt, zenithalOn, primerColor, lightOn, lightInt, extraZones, mainMetal };
@@ -1748,7 +1711,8 @@ export default function App() {
     setDone(r.done && typeof r.done === "object" ? r.done : {});
     setGlazeOn(!!r.glazeOn); setPooling(num(r.pooling, 0.6, 0, 0.9)); setGlazeLayers(layers);
     setMethod(r.method === "airbrush" ? "airbrush" : "brush");
-    setSpray(!!r.spray); setFocus(num(r.focus, 0.5, 0, 1));
+    setSpray(!!r.spray && r.method === "airbrush"); setFocus(num(r.focus, 0.5, 0, 1)); // spray without airbrush would be stranded on with no off-switch
+
     setOrbOn(!!r.orbOn); setOrbAz(num(r.orbAz, 200, 0, 360)); setOrbEl(num(r.orbEl, 0, -20, 90));
     setOrbColor(validHex(r.orbColor) ? r.orbColor : "#3fb8ff"); setOrbInt(num(r.orbInt, 0.5, 0, 1));
     setRimOn(!!r.rimOn); setRimAz(num(r.rimAz, 200, 0, 360)); setRimEl(num(r.rimEl, 15, -20, 90));
@@ -1759,14 +1723,27 @@ export default function App() {
     setLightInt(num(r.lightInt, 1, 0.2, 1.5));
     const metalOk = (m) => (m === "steel" || m === "gold" ? m : null);
     setMainMetal(metalOk(r.mainMetal));
-    setExtraZones(Array.isArray(r.extraZones)
+    const zones = Array.isArray(r.extraZones)
       ? r.extraZones.slice(0, 3).filter((z) => z && validHex(z.base)).map((z, k) => ({
           name: typeof z.name === "string" && z.name.trim() ? z.name.slice(0, 24) : "Zone " + (k + 2),
           base: z.base,
           metal: metalOk(z.metal),
           ramp: Array.isArray(z.ramp) && z.ramp.length === steps && z.ramp.every(validHex) ? z.ramp : generateRamp(z.base, steps),
         }))
-      : []);
+      : [];
+    setExtraZones(zones);
+    // Faces assigned to zones this recipe doesn't have would render inconsistently and
+    // silently resurrect if zones are re-added — unassign them, like removeZone does.
+    const zMax = zones.length;
+    let stale = false;
+    for (const a of Object.values(zoneArrs.current)) if (a) {
+      for (let i = 0; i < a.length; i++) if (a[i] > zMax) { a[i] = 0; stale = true; }
+    }
+    if (stale) {
+      const strip = (v) => Object.fromEntries(Object.entries(v).filter(([, zz]) => zz <= zMax));
+      setZoneMap3d((m) => Object.fromEntries(Object.entries(m).map(([k, v]) => [k, strip(v)])));
+      setZoneVer((v) => v + 1);
+    }
     setActiveZone(0);
   }, []);
   const load = async (nm) => {
@@ -1780,6 +1757,36 @@ export default function App() {
   const del = async (nm) => {
     if (!window.storage) return;
     try { await window.storage.delete("recipe:" + nm); refreshList(); setStatus("Deleted “" + nm + "”."); } catch {}
+  };
+  // Recipes live in this browser's storage only — export/import moves them between devices.
+  const exportRecipes = async () => {
+    if (!window.storage) return;
+    try {
+      const res = await window.storage.list("recipe:");
+      const keys = res?.keys || [];
+      if (!keys.length) { setStatus("No recipes to export."); return; }
+      const out = {};
+      for (const k of keys) { const r = await window.storage.get(k); if (r) { try { out[k.replace("recipe:", "")] = JSON.parse(r.value); } catch {} } }
+      const blob = new Blob([JSON.stringify({ app: "lightbench", version: 1, recipes: out }, null, 2)], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob); a.download = "light-bench-recipes.json"; a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      setStatus("Exported " + Object.keys(out).length + " recipe(s).");
+    } catch { setStatus("Export failed."); }
+  };
+  const importRecipes = async (file) => { // merges; same-named recipes are overwritten
+    if (!window.storage || !file) return;
+    try {
+      const data = JSON.parse(await file.text());
+      const rs = data && typeof data.recipes === "object" && data.recipes ? data.recipes : null;
+      if (!rs) throw new Error("wrong shape");
+      let n = 0;
+      for (const [nm, r] of Object.entries(rs)) {
+        if (!nm.trim() || !r || typeof r !== "object") continue;
+        await window.storage.set("recipe:" + nm.trim().slice(0, 60), JSON.stringify(r)); n++;
+      }
+      refreshList(); setStatus(n ? "Imported " + n + " recipe(s)." : "No recipes in that file.");
+    } catch { setStatus("Couldn't read that file — expected a Light Bench recipe export."); }
   };
 
   const figRef = useRef(null);
@@ -1807,7 +1814,13 @@ export default function App() {
             if (r.model && MODELS[r.model] && (r.model !== "custom" || meshCache.custom)) setModel(r.model);
             if (typeof r.activeStage === "string") setActiveStage(r.activeStage);
             if (typeof r.paintBrand === "string") setPaintBrand(r.paintBrand);
-            if (r.zoneMap3d && typeof r.zoneMap3d === "object") setZoneMap3d(r.zoneMap3d);
+            if (r.zoneMap3d && typeof r.zoneMap3d === "object") {
+              setZoneMap3d(r.zoneMap3d);
+              // the first render may have already cached zeroed zone arrays via zoneArrFor —
+              // drop them so they rebuild from the restored sparse maps ("custom" came from IDB above)
+              for (const k of Object.keys(zoneArrs.current)) if (k !== "custom") delete zoneArrs.current[k];
+              setZoneVer((v) => v + 1);
+            }
             if (r.openSec && typeof r.openSec === "object") setOpenSec(r.openSec);
             if (typeof r.smoothShade === "boolean") setSmoothShade(r.smoothShade);
           }
@@ -1835,6 +1848,7 @@ export default function App() {
     // right column: ramp grid + per-zone paint lists + accents + light/glaze lines — size to whichever is taller
     const paintsH = zoneMatches.reduce((s, m) => s + (zoneMatches.length > 1 ? 15 : 0) + m.length * 16, 27);
     const rightH = 22 + Math.ceil(tiers.length / 4) * 72 + 14 + paintsH + (accents.length ? 54 : 0) + 60;
+    cv.width = W;
     cv.height = top + Math.max(figH, rightH) + 40;
     const ctx = cv.getContext("2d");
     ctx.fillStyle = "#141611"; ctx.fillRect(0, 0, W, cv.height);
@@ -1885,10 +1899,22 @@ export default function App() {
     ctx.fillStyle = "#d6d3d1"; ctx.font = "12px Segoe UI, system-ui, sans-serif";
     ctx.fillText("Light — orbit " + Math.round(az) + "°, height " + Math.round(el) + "°, intensity " + Math.round(lightInt * 100) + "%", rx, ry); ry += 20;
     ctx.fillText("Paint — " + (glazeOn ? "Glaze · pooling " + Math.round(pooling * 100) + "% · " + glazeLayers.length + " layers" : "Opaque"), rx, ry);
-    const a = document.createElement("a");
-    a.download = (name.trim() || "light-bench") + ".png";
-    a.href = cv.toDataURL("image/png"); a.click();
-    setStatus("Exported PNG.");
+    const fname = (name.trim() || "light-bench") + ".png";
+    // On phones (esp. installed PWAs) the share sheet beats a silent download; fall back to the <a download>.
+    // Touch-only: desktop keeps the direct download it always had.
+    cv.toBlob(async (blob) => {
+      if (COARSE && blob && navigator.canShare) {
+        const file = new File([blob], fname, { type: "image/png" });
+        if (navigator.canShare({ files: [file] })) {
+          try { await navigator.share({ files: [file], title: "The Light Bench" }); setStatus("Shared PNG."); return; }
+          catch (e) { if (e && e.name === "AbortError") return; } // user closed the sheet — not a failure
+        }
+      }
+      const a = document.createElement("a");
+      a.download = fname;
+      a.href = cv.toDataURL("image/png"); a.click();
+      setStatus("Exported PNG.");
+    }, "image/png");
   };
 
   // light compass dot
@@ -1945,9 +1971,9 @@ export default function App() {
               <span className="text-[9px] uppercase tracking-wider text-stone-600 mr-0.5">Extras</span>
               {[
                 ["Light direction", lightOn, () => setLightOn(!lightOn), "Plan directional light and value tiers — switch off for a flat paint scheme"],
-                ["Airbrush", method === "airbrush", () => setMethod(method === "airbrush" ? "brush" : "airbrush"), "Rewrite every step for airbrush workflow"],
-                ["Rim light", rimOn, () => setRimOn(!rimOn), "A second, cooler light — controls appear under Light direction"],
-                ["Glow", orbOn, () => setOrbOn(!orbOn), "Object-source glow (OSL) — controls appear under Light direction"],
+                ["Airbrush", method === "airbrush", () => { const next = method === "airbrush" ? "brush" : "airbrush"; setMethod(next); if (next !== "airbrush") setSpray(false); }, "Rewrite every step for airbrush workflow"],
+                ["Rim light", rimOn, () => setRimOn(!rimOn), "A second, cooler light — controls appear in the Extras section below"],
+                ["Glow", orbOn, () => setOrbOn(!orbOn), "Object-source glow (OSL) — controls appear in the Extras section below"],
               ].map(([lb, on, fn, tip]) => (
                 <button key={lb} onClick={fn} aria-pressed={on} title={tip}
                   className={"px-2.5 py-1 rounded-full text-[11px] border transition-colors " +
@@ -2193,11 +2219,11 @@ export default function App() {
             {glazeOn && (
               <div className="mt-2 flex items-center gap-3">
                 <input type="color" value={(glazeLayers[0] || {}).color || "#7a5a3a"}
-                  onChange={(e) => setGlazeLayers([{ color: e.target.value, opacity: (glazeLayers[0] || {}).opacity ?? 0.3 }])}
+                  onChange={(e) => setGlazeLayers((ls) => [{ ...(ls[0] || { opacity: 0.3 }), color: e.target.value }, ...ls.slice(1)])}
                   className="w-8 h-8 flex-none bg-transparent border-0 cursor-pointer" title="Glaze color" />
                 <div className="flex-1">
                   <Slider label="Glaze strength" value={Math.round(((glazeLayers[0] || {}).opacity ?? 0.3) * 100)} min={5} max={95}
-                    onChange={(v) => setGlazeLayers([{ color: (glazeLayers[0] || {}).color || "#7a5a3a", opacity: v / 100 }])} suffix="%" />
+                    onChange={(v) => setGlazeLayers((ls) => [{ ...(ls[0] || { color: "#7a5a3a" }), opacity: v / 100 }, ...ls.slice(1)])} suffix="%" />
                 </div>
               </div>
             )}
@@ -2311,7 +2337,6 @@ export default function App() {
                 {rimOn && (
                   <div className="pt-2 border-t border-stone-800">
                     <div className="text-xs text-stone-300">Rim light <span className="text-stone-500">— aimed separately, tinted cool (toggle in Extras)</span></div>
-                    {true && (
                     <div className="mt-2 space-y-3">
                       <Slider label="Rim orbit" value={rimAz} min={0} max={360} onChange={setRimAz} suffix="°" />
                       <Slider label="Rim height" value={rimEl} min={-20} max={90} onChange={setRimEl} suffix="°" />
@@ -2323,7 +2348,6 @@ export default function App() {
                         </div>
                       </div>
                     </div>
-                    )}
                   </div>
                 )}
               {orbOn && (
@@ -2333,7 +2357,6 @@ export default function App() {
             <span className="text-stone-300">adds</span> on top of the main light: planes facing the orb pick up its
             color and brighten; planes facing away are untouched. Aim it independently to see the glow on its own.
           </p>
-          {orbOn && (
             <div className="mt-4 flex flex-col sm:flex-row gap-5 items-start">
               <div className="flex flex-col items-center">
                 <svg viewBox="0 0 52 52" className="w-[68px] h-[68px]">
@@ -2360,7 +2383,6 @@ export default function App() {
                 </p>
               </div>
             </div>
-          )}
               </div>
               )}
         </Section>
@@ -2514,6 +2536,18 @@ export default function App() {
                 <button aria-label={"Delete recipe " + nm} onClick={() => del(nm)} className="text-stone-600 hover:text-red-400"><Trash2 size={12} /></button>
               </div>
             ))}
+          </div>
+          <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t border-stone-800">
+            <button onClick={exportRecipes} title="Download every saved recipe as a JSON file — back up or move to another device"
+              className="flex items-center gap-1 text-[11px] text-stone-400 hover:text-stone-200 border border-stone-700 hover:border-stone-500 rounded-full px-3 py-1.5">
+              <Download size={12} /> Export recipes
+            </button>
+            <label className="flex items-center gap-1 text-[11px] text-stone-400 hover:text-stone-200 border border-stone-700 hover:border-stone-500 rounded-full px-3 py-1.5 cursor-pointer"
+              title="Load a light-bench-recipes.json exported on another device — merges with what's here">
+              <input type="file" accept=".json,application/json" className="hidden"
+                onChange={(e) => { const f = e.target.files?.[0]; if (f) importRecipes(f); e.target.value = ""; }} />
+              <Upload size={12} /> Import recipes
+            </label>
           </div>
         </Section>
         <p className="text-[11px] text-stone-600 mt-6 mb-2 leading-relaxed border-t border-stone-800 pt-4">

@@ -49,7 +49,10 @@ button,select,label,input{touch-action:manipulation;}
 // PWA tags: manifest + icons for install, theme color for the title bar. The
 // service-worker registration is guarded so a double-clicked file:// copy is
 // unaffected — PWA install only activates when hosted over http(s).
-const pwa = `<link rel="manifest" href="manifest.json">` +
+const pwa = `<meta name="description" content="The Light Bench — a miniature-painting light, value and layering planner. One light, one figure: move the light, build a recipe, walk the steps.">` +
+  `<link rel="icon" type="image/svg+xml" href="icons/icon.svg">` +
+  `<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">` +
+  `<link rel="manifest" href="manifest.json">` +
   `<meta name="theme-color" content="#141611">` +
   `<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">` +
   `<meta name="mobile-web-app-capable" content="yes">` +
@@ -69,7 +72,7 @@ writeFileSync("index.html", html);
 //    cache and old ones are dropped on activate.
 const ver = createHash("sha256").update(html).digest("hex").slice(0, 10);
 const sw = `const CACHE="lightbench-${ver}";
-const ASSETS=["./","./index.html","./manifest.json","./icons/icon-192.png","./icons/icon-512.png","./icons/maskable-192.png","./icons/maskable-512.png","./icons/apple-touch-icon.png"];
+const ASSETS=["./","./index.html","./manifest.json","./icons/icon.svg","./icons/icon-192.png","./icons/icon-512.png","./icons/maskable-192.png","./icons/maskable-512.png","./icons/apple-touch-icon.png"];
 self.addEventListener("install",e=>{e.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS)).then(()=>self.skipWaiting()))});
 self.addEventListener("activate",e=>{e.waitUntil(caches.keys().then(ks=>Promise.all(ks.filter(k=>k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim()))});
 self.addEventListener("fetch",e=>{
