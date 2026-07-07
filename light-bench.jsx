@@ -2661,6 +2661,7 @@ export default function App() {
           A teaching tool, not a portrait of any one model. The figure is generic on purpose — the point is reading how
           light falls on planes, which transfers to anything on your table. Brightness here is a simple shading model
           (ambient + directional), so treat it as a guide to <i>where</i>, not a literal render.
+          {typeof window !== "undefined" && window.LB_VERSION ? <span className="text-stone-700"> · build {window.LB_VERSION}</span> : null}
         </p>
 
           </div>{/* end controls pane */}

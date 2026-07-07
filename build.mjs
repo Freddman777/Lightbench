@@ -59,18 +59,44 @@ const pwa = `<meta name="description" content="The Light Bench — a miniature-p
   `<meta name="apple-mobile-web-app-capable" content="yes">` +
   `<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">` +
   `<meta name="apple-mobile-web-app-title" content="Light Bench">`;
-const swReg = `<script>if("serviceWorker"in navigator&&/^https?:$/.test(location.protocol)){addEventListener("load",()=>navigator.serviceWorker.register("sw.js").catch(()=>{}))}</script>`;
-const html = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">` +
+// SW registration + update flow: the new worker auto-activates (skipWaiting/claim in
+// sw.js), so when it takes control mid-session we offer a one-tap reload. No toast on
+// the very first install (no prior controller). reg.update() runs whenever the tab
+// becomes visible again — installed PWAs keep pages alive for days.
+const swReg = `<script>
+if ("serviceWorker" in navigator && /^https?:$/.test(location.protocol)) {
+  addEventListener("load", () => {
+    let hadController = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.register("sw.js").then((reg) => {
+      document.addEventListener("visibilitychange", () => { if (!document.hidden) reg.update().catch(() => {}); });
+    }).catch(() => {});
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (!hadController) { hadController = true; return; }
+      if (document.getElementById("lb-upd")) return;
+      const b = document.createElement("button");
+      b.id = "lb-upd";
+      b.textContent = "Updated — tap to reload";
+      b.style.cssText = "position:fixed;left:50%;transform:translateX(-50%);bottom:calc(14px + env(safe-area-inset-bottom));z-index:9999;background:#1d201a;color:#d6e3b8;border:1px solid #5a6547;border-radius:9999px;padding:10px 18px;font:600 11px 'Segoe UI',system-ui,sans-serif;letter-spacing:.12em;text-transform:uppercase;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.5)";
+      b.onclick = () => location.reload();
+      document.body.appendChild(b);
+    });
+  });
+}
+</script>`.replace(/\n\s*/g, "");
+const html0 = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">` +
   `<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">` +
   `<title>The Light Bench — Miniature Painting Tool</title>` +
   pwa +
+  `<script>window.LB_VERSION="__LBVER__"</script>` +
   `<style>${css}${extra}</style></head><body><div id="root"></div><script>${js}</script>${swReg}</body></html>`;
-writeFileSync("index.html", html);
 
-// 5. Service worker: precache everything, stale-while-revalidate on fetch.
-//    Cache name carries a hash of the built HTML so each rebuild ships a new
-//    cache and old ones are dropped on activate.
-const ver = createHash("sha256").update(html).digest("hex").slice(0, 10);
+// 5. Build version: one short hash stamped into the page (window.LB_VERSION, shown in
+//    the app footer) AND used as the SW cache name, so "which build am I running?" and
+//    "which cache is this?" always agree. Hash is taken over the placeholder form to
+//    avoid the circular dependency of hashing the stamped output.
+const ver = createHash("sha256").update(html0).digest("hex").slice(0, 8);
+const html = html0.replaceAll("__LBVER__", ver);
+writeFileSync("index.html", html);
 const sw = `const CACHE="lightbench-${ver}";
 const ASSETS=["./","./index.html","./manifest.json","./icons/icon.svg","./icons/icon-192.png","./icons/icon-512.png","./icons/maskable-192.png","./icons/maskable-512.png","./icons/apple-touch-icon.png"];
 self.addEventListener("install",e=>{e.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS)).then(()=>self.skipWaiting()))});
