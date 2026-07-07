@@ -771,11 +771,24 @@ const Model3DCanvas = React.memo(function Model3DCanvas({ mesh, L, ramp, mode, i
     }
   }, [mesh, brights, L, ramp, mode, isoTier, tierKeys, glazeOn, glazeLayers, pooling, valueMode, sprayOn, focus, sprayColor, orbOn, Lorb, orbColor, orbInt, rot, zoom, zoneRamps, zoneMap, zoneMetals, zoneVer, onPickFace, rimOn, Lrim, rimColor, rimInt, primerColor, lightOn]);
 
+  const onKey = (e) => { // keyboard access: arrows rotate, +/- zoom
+    if (noDrag) return;
+    const st = e.shiftKey ? 0.3 : 0.1;
+    if (e.key === "ArrowLeft") setRot((r) => ({ ...r, yaw: r.yaw - st }));
+    else if (e.key === "ArrowRight") setRot((r) => ({ ...r, yaw: r.yaw + st }));
+    else if (e.key === "ArrowUp") setRot((r) => ({ ...r, pitch: clamp(r.pitch - st, -1.2, 1.2) }));
+    else if (e.key === "ArrowDown") setRot((r) => ({ ...r, pitch: clamp(r.pitch + st, -1.2, 1.2) }));
+    else if (e.key === "+" || e.key === "=") setZoom((z) => clamp(z * 1.15, 0.6, 4));
+    else if (e.key === "-" || e.key === "_") setZoom((z) => clamp(z / 1.15, 0.6, 4));
+    else return;
+    e.preventDefault();
+  };
   return (
     <div className="relative flex flex-col items-center">
-      <canvas ref={canvasRef} width={460} height={600}
-        className={"w-full h-auto select-none touch-none " + (onPickFace || onBrushFaces ? "cursor-crosshair" : noDrag ? "" : "cursor-grab active:cursor-grabbing")}
-        onContextMenu={(e) => e.preventDefault()}
+      <canvas ref={canvasRef} width={460} height={600} tabIndex={0}
+        aria-label="3D model. Arrow keys rotate, plus and minus zoom; hold Shift for bigger steps."
+        className={"w-full h-auto select-none touch-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500 " + (onPickFace || onBrushFaces ? "cursor-crosshair" : noDrag ? "" : "cursor-grab active:cursor-grabbing")}
+        onContextMenu={(e) => e.preventDefault()} onKeyDown={onKey}
         onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerLeave={onUp} />
       <div ref={ringRef} className="pointer-events-none absolute rounded-full border-2 border-amber-300/70" style={{ display: "none" }} />
       {!noDrag && (
@@ -1067,7 +1080,7 @@ const ModelGL = React.memo(function ModelGL({ mesh, L, ramp, mode, isoTier, tier
   const [rot, setRot] = useState(initRot || { yaw: -0.5, pitch: 0.12 });
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 }); // camera target offset in view units
-  const canvasRef = useRef(null), ringRef = useRef(null);
+  const canvasRef = useRef(null), ringRef = useRef(null), markerRef = useRef(null);
   const S = useRef(null);
   const drag = useRef(null), raf = useRef(0), pendingRot = useRef(null), pendingPan = useRef(null);
   // A lost/reused context can't be revived on the same element — remount the canvas per mesh.
@@ -1216,6 +1229,44 @@ const ModelGL = React.memo(function ModelGL({ mesh, L, ramp, mode, isoTier, tier
       gl.drawArrays(gl.LINES, 0, g.lines.length / 3);
     }
     gl.bindVertexArray(null);
+    // Amber "where light lands" ping on the brightest visible facet — same lens the
+    // canvas renderer has. CPU-side argmax (stride-sampled on huge meshes) projected
+    // with the exact GL_VERT transform, positioned as a DOM overlay.
+    const mk = markerRef.current;
+    if (mk) {
+      if (mode === "prime") mk.style.display = "none";
+      else {
+        const W = cnv.width, H = cnv.height;
+        const fit = (Math.min(W, H) * 0.46 * zoom) / g.radius, camDist = g.radius * 4.2;
+        const sX = (fit * camDist) / (W / 2), sY = (fit * camDist) / (H / 2);
+        const cyw = Math.cos(rot.yaw), syw = Math.sin(rot.yaw), cpt = Math.cos(rot.pitch), spt = Math.sin(rot.pitch);
+        const rotv = (x, y, z) => { const x1 = cyw * x + syw * z, z1 = -syw * x + cyw * z; return [x1, cpt * y - spt * z1, spt * y + cpt * z1]; };
+        const stride = Math.max(1, Math.floor(g.triCount / 30000));
+        const nT = tierKeys ? tierKeys.length : ramp.length;
+        let bb = -1, bt = -1;
+        for (let t = 0; t < g.triCount; t += stride) {
+          const f = g.fid[t * 3];
+          const nx = g.faceNormals[f * 3], ny = g.faceNormals[f * 3 + 1], nz = g.faceNormals[f * 3 + 2];
+          if (rotv(nx, ny, nz)[2] <= 0.001) continue; // backfacing
+          const b = brightness([nx, ny, nz], L, g.ao ? g.ao[f] / 255 : 1, lightInt);
+          if (isoTier != null && tierKeys && tierKeys[tierIndex(b, nT)] !== isoTier) continue;
+          if (b > bb) { bb = b; bt = t; }
+        }
+        if (bt < 0) mk.style.display = "none";
+        else {
+          const o = bt * 9;
+          const v = rotv(
+            (g.pos[o] + g.pos[o + 3] + g.pos[o + 6]) / 3 - g.center[0],
+            (g.pos[o + 1] + g.pos[o + 4] + g.pos[o + 7]) / 3 - g.center[1],
+            (g.pos[o + 2] + g.pos[o + 5] + g.pos[o + 8]) / 3 - g.center[2]);
+          const w = camDist - v[2];
+          const ndcX = ((v[0] + pan.x) * sX) / w, ndcY = ((v[1] + pan.y) * sY) / w;
+          mk.style.display = "block";
+          mk.style.left = ((ndcX * 0.5 + 0.5) * cnv.clientWidth - 14) + "px";
+          mk.style.top = ((0.5 - ndcY * 0.5) * cnv.clientHeight - 14) + "px";
+        }
+      }
+    }
   });
 
   const renderPick = () => {
@@ -1340,13 +1391,28 @@ const ModelGL = React.memo(function ModelGL({ mesh, L, ramp, mode, isoTier, tier
     cnv.addEventListener("wheel", onWheel, { passive: false });
     return () => cnv.removeEventListener("wheel", onWheel);
   }, [noDrag, meshKey]); // the canvas remounts per mesh — rebind or scroll-zoom dies after an import
+  const onKey = (e) => { // keyboard access: arrows rotate, +/- zoom
+    if (noDrag) return;
+    const st = e.shiftKey ? 0.3 : 0.1;
+    if (e.key === "ArrowLeft") setRot((r) => ({ ...r, yaw: r.yaw - st }));
+    else if (e.key === "ArrowRight") setRot((r) => ({ ...r, yaw: r.yaw + st }));
+    else if (e.key === "ArrowUp") setRot((r) => ({ ...r, pitch: clamp(r.pitch - st, -1.2, 1.2) }));
+    else if (e.key === "ArrowDown") setRot((r) => ({ ...r, pitch: clamp(r.pitch + st, -1.2, 1.2) }));
+    else if (e.key === "+" || e.key === "=") setZoom((z) => clamp(z * 1.15, 0.6, 4));
+    else if (e.key === "-" || e.key === "_") setZoom((z) => clamp(z / 1.15, 0.6, 4));
+    else return;
+    e.preventDefault();
+  };
   return (
     <div className="relative flex flex-col items-center">
-      <canvas key={meshKey} ref={canvasRef} width={460} height={600}
-        className={"w-full h-auto select-none touch-none " + (onPickFace || onBrushFaces ? "cursor-crosshair" : noDrag ? "" : "cursor-grab active:cursor-grabbing")}
-        onContextMenu={(e) => e.preventDefault()}
+      <canvas key={meshKey} ref={canvasRef} width={460} height={600} tabIndex={0}
+        aria-label="3D model. Arrow keys rotate, plus and minus zoom; hold Shift for bigger steps."
+        className={"w-full h-auto select-none touch-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500 " + (onPickFace || onBrushFaces ? "cursor-crosshair" : noDrag ? "" : "cursor-grab active:cursor-grabbing")}
+        onContextMenu={(e) => e.preventDefault()} onKeyDown={onKey}
         onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerLeave={onUp} />
       <div ref={ringRef} className="pointer-events-none absolute rounded-full border-2 border-amber-300/70" style={{ display: "none" }} />
+      <div ref={markerRef} className="pointer-events-none absolute w-7 h-7"
+        style={{ display: "none", background: "radial-gradient(circle, rgba(255,246,218,0.95) 0%, rgba(253,230,138,0.5) 25%, rgba(253,230,138,0) 70%)" }} />
       {!noDrag && (
         <div className="mt-1.5 w-full flex items-center justify-between gap-2">
           {onToggleSmooth ? (
@@ -1434,11 +1500,24 @@ function ColorWheel({ ramp, accents, base, onPickBase, previewAccent, onSelectAc
     onPickBase(hslToHex(h, s, l));
   }, [base, onPickBase, accents, previewAccent, onSelectAccent]);
 
+  const onKey = useCallback((e) => { // keyboard access: arrows steer hue/saturation
+    const { h, s, l } = hexToHsl(base);
+    const step = e.shiftKey ? 15 : 3;
+    let nh = h, ns = s;
+    if (e.key === "ArrowRight") nh += step;
+    else if (e.key === "ArrowLeft") nh -= step;
+    else if (e.key === "ArrowUp") ns = clamp(s + step, 6, 100);
+    else if (e.key === "ArrowDown") ns = clamp(s - step, 6, 100);
+    else return;
+    e.preventDefault();
+    onPickBase(hslToHex(((nh % 360) + 360) % 360, ns, l));
+  }, [base, onPickBase]);
   const points = ramp.map((c) => { const { h, s } = hexToHsl(c); return pos(h, s); });
   return (
     <div className="flex flex-col items-center">
-      <div ref={ref} onPointerDown={handle}
-        className="relative rounded-full cursor-crosshair select-none touch-none"
+      <div ref={ref} onPointerDown={handle} onKeyDown={onKey} tabIndex={0} role="application"
+        aria-label="Color wheel. Left and right arrows change the base hue, up and down change saturation; hold Shift for bigger steps."
+        className="relative rounded-full cursor-crosshair select-none touch-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500"
         style={{
           width: C * 2, height: C * 2,
           background: "conic-gradient(from 90deg, hsl(0,75%,55%), hsl(60,75%,55%), hsl(120,75%,55%), hsl(180,75%,55%), hsl(240,75%,55%), hsl(300,75%,55%), hsl(360,75%,55%))",
@@ -1823,6 +1902,8 @@ export default function App() {
             }
             if (r.openSec && typeof r.openSec === "object") setOpenSec(r.openSec);
             if (typeof r.smoothShade === "boolean") setSmoothShade(r.smoothShade);
+            if (Number.isFinite(r.brushSize)) setBrushSize(clamp(r.brushSize, 8, 60));
+            if (typeof r.mirrorOn === "boolean") setMirrorOn(r.mirrorOn);
           }
         } catch {}
       }
@@ -1836,10 +1917,10 @@ export default function App() {
     // Debounced: sliders fire this every tick; one write after the user pauses is enough.
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
-      try { window.storage.set("session:last", JSON.stringify({ model, activeStage, base, numSteps, ramp, accents, az, el, done, glazeOn, pooling, glazeLayers, method, spray, focus, orbOn, orbAz, orbEl, orbColor, orbInt, rimOn, rimAz, rimEl, rimColor, rimInt, zenithalOn, primerColor, lightOn, lightInt, smoothShade, paintBrand, extraZones, mainMetal, zoneMap3d, openSec })); } catch {}
+      try { window.storage.set("session:last", JSON.stringify({ model, activeStage, base, numSteps, ramp, accents, az, el, done, glazeOn, pooling, glazeLayers, method, spray, focus, orbOn, orbAz, orbEl, orbColor, orbInt, rimOn, rimAz, rimEl, rimColor, rimInt, zenithalOn, primerColor, lightOn, lightInt, smoothShade, paintBrand, extraZones, mainMetal, zoneMap3d, openSec, brushSize, mirrorOn })); } catch {}
     }, 300);
     return () => clearTimeout(saveTimer.current);
-  }, [model, activeStage, base, numSteps, ramp, accents, az, el, done, glazeOn, pooling, glazeLayers, method, spray, focus, orbOn, orbAz, orbEl, orbColor, orbInt, rimOn, rimAz, rimEl, rimColor, rimInt, zenithalOn, primerColor, lightOn, lightInt, smoothShade, paintBrand, extraZones, mainMetal, zoneMap3d, openSec]);
+  }, [model, activeStage, base, numSteps, ramp, accents, az, el, done, glazeOn, pooling, glazeLayers, method, spray, focus, orbOn, orbAz, orbEl, orbColor, orbInt, rimOn, rimAz, rimEl, rimColor, rimInt, zenithalOn, primerColor, lightOn, lightInt, smoothShade, paintBrand, extraZones, mainMetal, zoneMap3d, openSec, brushSize, mirrorOn]);
 
   // Export a painting-reference PNG: the figure as shown + value ramp, accents, light & glaze.
   const exportPNG = () => {
@@ -2217,14 +2298,40 @@ export default function App() {
               Glaze preview <span className="text-stone-500">— a thin wash over whatever's shown: unifying over paint, slapchop over the Zenithal step</span>
             </label>
             {glazeOn && (
-              <div className="mt-2 flex items-center gap-3">
-                <input type="color" value={(glazeLayers[0] || {}).color || "#7a5a3a"}
-                  onChange={(e) => setGlazeLayers((ls) => [{ ...(ls[0] || { opacity: 0.3 }), color: e.target.value }, ...ls.slice(1)])}
-                  className="w-8 h-8 flex-none bg-transparent border-0 cursor-pointer" title="Glaze color" />
-                <div className="flex-1">
-                  <Slider label="Glaze strength" value={Math.round(((glazeLayers[0] || {}).opacity ?? 0.3) * 100)} min={5} max={95}
-                    onChange={(v) => setGlazeLayers((ls) => [{ ...(ls[0] || { color: "#7a5a3a" }), opacity: v / 100 }, ...ls.slice(1)])} suffix="%" />
+              <div className="mt-2 space-y-2">
+                {glazeLayers.map((ly, li) => (
+                  <div key={li} className="flex items-center gap-3">
+                    <input type="color" value={ly.color}
+                      onChange={(e) => setGlazeLayers((ls) => ls.map((l, k) => (k === li ? { ...l, color: e.target.value } : l)))}
+                      className="w-8 h-8 flex-none bg-transparent border-0 cursor-pointer" title={"Glaze layer " + (li + 1) + " color"} />
+                    <div className="flex-1">
+                      <Slider label={glazeLayers.length > 1 ? "Layer " + (li + 1) + " strength" : "Glaze strength"}
+                        value={Math.round((ly.opacity ?? 0.3) * 100)} min={5} max={95}
+                        onChange={(v) => setGlazeLayers((ls) => ls.map((l, k) => (k === li ? { ...l, opacity: v / 100 } : l)))} suffix="%" />
+                    </div>
+                    {glazeLayers.length > 1 && (
+                      <button aria-label={"Remove glaze layer " + (li + 1)}
+                        onClick={() => setGlazeLayers((ls) => ls.filter((_, k) => k !== li))}
+                        className="text-stone-600 hover:text-red-400 flex-none"><Trash2 size={13} /></button>
+                    )}
+                  </div>
+                ))}
+                <div className="flex items-center gap-4 pt-1">
+                  {glazeLayers.length < 5 && (
+                    <button onClick={() => setGlazeLayers((ls) => [...ls, { color: ramp[Math.min(ls.length + 1, ramp.length - 1)], opacity: 0.3 }])}
+                      className="flex items-center gap-1 text-[11px] text-stone-400 hover:text-stone-200 border border-stone-700 hover:border-stone-500 rounded-full px-3 py-1.5">
+                      <Plus size={12} /> Add layer
+                    </button>
+                  )}
+                  <div className="flex-1">
+                    <Slider label="Recess pooling" value={Math.round(pooling * 100)} min={0} max={90}
+                      onChange={(v) => setPooling(v / 100)} suffix="%" />
+                  </div>
                 </div>
+                <p className="text-[11px] text-stone-500 leading-snug">
+                  Layers composite in order, each thinning on the lit tops. Pooling is how strongly a glaze
+                  drains off the highlights and gathers in the recesses — 0% coats evenly.
+                </p>
               </div>
             )}
           </div>

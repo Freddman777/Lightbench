@@ -1,0 +1,26 @@
+# Build the app and fail if the committed artifacts (index.html, sw.js) drift
+# from what the source produces — the exact failure mode AGENT-HANDOFF.md warns
+# about (hand-edited or stale build artifacts).
+name: build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Committed artifacts must match the source
+        run: |
+          git diff --exit-code index.html sw.js || {
+            echo "::error::index.html/sw.js are stale — run 'npm run build' and commit the result."
+            exit 1
+          }
